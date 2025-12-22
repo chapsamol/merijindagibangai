@@ -1,0 +1,10 @@
+kiteconnect
+fastapi
+uvicorn[standard]
+pytz
+redis
+hiredis
+uvloop
+gunicorn
+jinja2
+python-multipart
