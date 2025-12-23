@@ -3,23 +3,22 @@ import json
 import os
 
 # --- Configuration ---
-# On Heroku, the Redis URL is stored in an environment variable (usually REDIS_URL)
-# We use from_url to handle the connection string automatically
+# Heroku uses REDIS_URL environment variable
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
 
-# This pattern depends on how you store your stock data. 
-# Adjust the pattern to match your Redis key structure
-KEY_PATTERN = 'stock_data:*' 
+# Based on your TradeControl code, keys are likely saved by instrument token.
+# We will scan for all keys that look like market data. 
+# If your TradeControl uses a prefix like 'market_data:', update this pattern.
+KEY_PATTERN = '*' 
 SMA_THRESHOLD = 1000
 
 def check_sma_count():
     """
-    Scans Redis for stock keys, parses JSON data, and counts those with Volume SMA > Threshold.
-    Uses scan_iter for better performance with large datasets.
+    Scans Redis for stock data synced by the Sync_Command script.
+    Filters stocks where calculated SMA > 1000.
     """
     try:
-        # SSL FIX: Heroku Redis often uses self-signed certificates.
-        # ssl_cert_reqs=None disables certificate verification to prevent the [SSL: CERTIFICATE_VERIFY_FAILED] error.
+        # Connect with SSL fix for Heroku
         r = redis.from_url(
             REDIS_URL, 
             decode_responses=True, 
@@ -33,44 +32,47 @@ def check_sma_count():
         total_scanned = 0
         qualified_stocks = []
         
-        print(f"Connected to Redis via {REDIS_URL[:20]}...")
-        print(f"Filtering stocks with Volume SMA > {SMA_THRESHOLD}...")
+        print(f"Connected to Redis. Scanning for SMA > {SMA_THRESHOLD}...")
 
-        # 1. Use scan_iter instead of keys() to avoid blocking the Redis server
+        # Use scan_iter to prevent blocking the production Redis
         for key in r.scan_iter(KEY_PATTERN):
-            total_scanned += 1
-            
-            # 2. Get the data
             data_raw = r.get(key)
             if not data_raw:
                 continue
                 
             try:
+                # Your code saves a dictionary as JSON
                 data = json.loads(data_raw)
                 
-                # 3. Extract Volume SMA
-                vol_sma = data.get('volume_sma', 0)
+                # In your provided code, the field name is 'sma'
+                sma_value = data.get('sma', 0)
+                symbol = data.get('symbol', 'Unknown')
                 
-                if vol_sma > SMA_THRESHOLD:
+                if sma_value > SMA_THRESHOLD:
                     count += 1
-                    symbol = key.split(':')[-1] 
-                    qualified_stocks.append(symbol)
+                    qualified_stocks.append(f"{symbol} ({sma_value})")
+                
+                total_scanned += 1
                     
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                # Skip keys that aren't related to stock data
                 continue
 
-        # 4. Output results
-        print("-" * 40)
-        print(f"SCAN SUMMARY")
-        print("-" * 40)
-        print(f"Total keys checked: {total_scanned}")
-        print(f"Qualified stocks:   {count}")
-        print("-" * 40)
+        # Output results
+        print("-" * 45)
+        print(f"MARKET DATA SUMMARY")
+        print("-" * 45)
+        print(f"Total Stock Keys Scanned: {total_scanned}")
+        print(f"Stocks meeting criteria:  {count}")
+        print("-" * 45)
         
         if qualified_stocks:
-            print(f"Symbols: {', '.join(qualified_stocks)}")
+            print("Qualified Stocks (Symbol & SMA):")
+            # Print in columns for readability
+            for i in range(0, len(qualified_stocks), 3):
+                print(", ".join(qualified_stocks[i:i+3]))
         else:
-            print("No stocks met the criteria.")
+            print("No stocks found meeting the threshold.")
         
         return count
 
