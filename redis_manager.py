@@ -357,8 +357,11 @@ def _redis_url() -> str:
 async def get_redis() -> redis.Redis:
     """
     Lazy init Redis client with Heroku-friendly TLS settings.
-    Key fix:
-      - If URL is rediss://, pass ssl_cert_reqs=None to bypass self-signed chain errors.
+    
+    Fix for: AbstractConnection.__init__() got an unexpected keyword argument 'ssl'
+    - When using from_url with a 'rediss://' scheme, redis-py already knows to use SSL.
+    - Adding 'ssl=True' manually causes a conflict in the AbstractConnection constructor.
+    - We only need to provide 'ssl_cert_reqs' as None for Heroku's self-signed certs.
     """
     global _r
     if _r is not None:
@@ -368,7 +371,7 @@ async def get_redis() -> redis.Redis:
     if not url:
         raise RuntimeError("Redis URL not set. Set REDIS_TLS_URL or REDIS_URL in Heroku config vars.")
 
-    # Redis client kwargs
+    # Base Redis client kwargs
     kwargs = dict(
         decode_responses=True,             # store strings (JSON) cleanly
         socket_timeout=10,
@@ -377,20 +380,23 @@ async def get_redis() -> redis.Redis:
         health_check_interval=30,
     )
 
-    # TLS handling
+    # TLS handling for rediss://
     if url.startswith("rediss://"):
-        # ✅ Heroku Redis TLS commonly needs this to avoid CERT_VERIFY_FAILED
+        # ✅ FIX: Do NOT pass 'ssl=True' here when using from_url.
+        # The 'rediss' prefix in the URL already triggers SSL logic.
+        # We only pass the certificate requirement bypass for Heroku.
         kwargs.update(
-            ssl=True,
-            ssl_cert_reqs=None,            # IMPORTANT
+            ssl_cert_reqs=None, 
         )
 
-    _r = redis.from_url(url, **kwargs)
     try:
+        # Use from_url which parses the scheme and applies SSL logic internally
+        _r = redis.from_url(url, **kwargs)
         await _r.ping()
-        logger.info("✅ Redis connected.")
+        logger.info("✅ Redis connected successfully.")
     except Exception as e:
-        logger.error(f"❌ Redis ping failed: {e}")
+        logger.error(f"❌ Redis connection failed: {e}")
+        _r = None # Reset so next call retries
         raise
 
     return _r
@@ -475,7 +481,6 @@ class TradeControl:
     async def delete_market_data(token: str) -> bool:
         """
         Deletes one instrument market cache entry: nexus:market:{token}
-        (useful when it fails SMA filter so stale data doesn't remain)
         """
         try:
             r = await get_redis()
@@ -527,8 +532,7 @@ class TradeControl:
             return ""
 
     # -----------------------------
-    # STRATEGY SETTINGS (persist UI settings)
-    # key: nexus:settings:{side}
+    # STRATEGY SETTINGS
     # -----------------------------
     @staticmethod
     async def save_strategy_settings(side: str, cfg: dict) -> bool:
@@ -553,7 +557,7 @@ class TradeControl:
             return {}
 
     # -----------------------------
-    # SUBSCRIBE UNIVERSE (eligible tokens for whole day)
+    # SUBSCRIBE UNIVERSE
     # -----------------------------
     @staticmethod
     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:
@@ -582,13 +586,10 @@ class TradeControl:
             return []
 
     # -----------------------------
-    # TRADE LIMIT (per side, per day/session)
+    # TRADE LIMIT
     # -----------------------------
     @staticmethod
     async def can_trade(side: str, limit: int) -> bool:
-        """
-        Uses counter key nexus:trades:{side}
-        """
         try:
             r = await get_redis()
             key = f"nexus:trades:{side}"
@@ -600,7 +601,6 @@ class TradeControl:
             return True
         except Exception as e:
             logger.error(f"Failed can_trade check for {side}: {e}")
-            # Fail-safe: block trade if Redis is down
             return False
 
     @staticmethod
