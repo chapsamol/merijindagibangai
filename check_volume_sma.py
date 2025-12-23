@@ -3,22 +3,17 @@ import json
 import os
 
 # --- Configuration ---
-# Heroku uses REDIS_URL environment variable
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
-
-# Based on your TradeControl code, keys are likely saved by instrument token.
-# We will scan for all keys that look like market data. 
-# If your TradeControl uses a prefix like 'market_data:', update this pattern.
-KEY_PATTERN = '*' 
+HASH_KEY = 'nexus:market_cache'
 SMA_THRESHOLD = 1000
 
-def check_sma_count():
+def filter_high_volume_stocks():
     """
-    Scans Redis for stock data synced by the Sync_Command script.
-    Filters stocks where calculated SMA > 1000.
+    Iterates through the Redis Hash 'nexus:market_cache' and 
+    filters stocks where SMA > 1000.
     """
     try:
-        # Connect with SSL fix for Heroku
+        # SSL fix for Heroku production environments
         r = redis.from_url(
             REDIS_URL, 
             decode_responses=True, 
@@ -29,57 +24,50 @@ def check_sma_count():
         r.ping()
         
         count = 0
-        total_scanned = 0
-        qualified_stocks = []
+        total_stocks = 0
+        high_sma_stocks = []
         
-        print(f"Connected to Redis. Scanning for SMA > {SMA_THRESHOLD}...")
+        print(f"Connected to Redis. Analyzing Hash: {HASH_KEY}")
+        print(f"Threshold: SMA > {SMA_THRESHOLD}")
+        print("-" * 50)
 
-        # Use scan_iter to prevent blocking the production Redis
-        for key in r.scan_iter(KEY_PATTERN):
-            # FIX: Check the type of the key before trying to 'get' it.
-            # 'get' only works on strings. Tokens/Configs might be other types.
-            if r.type(key) != 'string':
-                continue
-
-            data_raw = r.get(key)
-            if not data_raw:
-                continue
-                
+        # Use hscan_iter to safely iterate over the Hash without blocking Redis
+        # It yields (field, value) pairs
+        for token, data_raw in r.hscan_iter(HASH_KEY):
+            total_stocks += 1
+            
             try:
-                # Your code saves a dictionary as JSON
                 data = json.loads(data_raw)
+                sma_value = data.get('sma', 0)
+                symbol = data.get('symbol', 'Unknown')
                 
-                # Verify this is actually a stock data object by checking for 'sma'
-                if isinstance(data, dict) and 'sma' in data:
-                    sma_value = data.get('sma', 0)
-                    symbol = data.get('symbol', 'Unknown')
+                if sma_value > SMA_THRESHOLD:
+                    count += 1
+                    high_sma_stocks.append({
+                        "symbol": symbol,
+                        "sma": sma_value,
+                        "token": token
+                    })
                     
-                    if sma_value > SMA_THRESHOLD:
-                        count += 1
-                        qualified_stocks.append(f"{symbol} ({sma_value})")
-                    
-                    total_scanned += 1
-                    
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                # Skip keys that aren't valid JSON stock data
+            except (json.JSONDecodeError, TypeError):
                 continue
 
-        # Output results
-        print("-" * 45)
-        print(f"MARKET DATA SUMMARY")
-        print("-" * 45)
-        print(f"Total Stock Keys Scanned: {total_scanned}")
-        print(f"Stocks meeting criteria:  {count}")
-        print("-" * 45)
+        # Output formatting
+        if high_sma_stocks:
+            # Sort by SMA value descending
+            high_sma_stocks.sort(key=lambda x: x['sma'], reverse=True)
+            
+            print(f"{'SYMBOL':<15} | {'SMA':<12} | {'TOKEN':<12}")
+            print("-" * 50)
+            for stock in high_sma_stocks:
+                print(f"{stock['symbol']:<15} | {stock['sma']:<12.2f} | {stock['token']:<12}")
         
-        if qualified_stocks:
-            print("Qualified Stocks (Symbol & SMA):")
-            # Print in columns for readability
-            for i in range(0, len(qualified_stocks), 3):
-                print(", ".join(qualified_stocks[i:i+3]))
-        else:
-            print("No stocks found meeting the threshold.")
-        
+        print("-" * 50)
+        print(f"Scan Summary:")
+        print(f"Total Stocks in Cache: {total_stocks}")
+        print(f"Stocks with SMA > 1000: {count}")
+        print("-" * 50)
+
         return count
 
     except redis.ConnectionError as e:
@@ -88,4 +76,4 @@ def check_sma_count():
         print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
-    check_sma_count()
+    filter_high_volume_stocks()
