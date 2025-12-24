@@ -1,333 +1,7 @@
-# # redis_manager.py
-# """
-# Nexus Redis Manager (Async)
-
-# ✅ Supports:
-# - API config (api_key/api_secret)
-# - Zerodha access_token
-# - Market cache (token -> {symbol,sma,pdh,pdl,prev_close,sync_time})
-# - Strategy settings persistence (nexus:settings:{side})
-# - Trade limit counters (per engine side)
-# - Subscribe universe persistence (eligible tokens list)
-
-# Environment:
-# - On Heroku, set REDIS_URL (recommended) or REDIS_HOST/REDIS_PORT/REDIS_PASSWORD
-
-# Dependencies:
-# - redis>=4.2.0  (uses redis.asyncio)
-# """
-
-# import os
-# import json
-# import logging
-# from datetime import datetime
-# from typing import Any, Dict, Tuple, Optional, List
-
-# import pytz
-# import redis.asyncio as redis
-
-# # -----------------------------
-# # LOGGING / TIMEZONE
-# # -----------------------------
-# logger = logging.getLogger("Redis_Manager")
-# IST = pytz.timezone("Asia/Kolkata")
-
-# # -----------------------------
-# # REDIS CONNECTION
-# # -----------------------------
-# REDIS_URL = os.getenv("REDIS_URL")
-
-# REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-# REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-# REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-# REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-
-# # Key prefixes
-# KEY_API_CONFIG = "nexus:config:api"              # {api_key, api_secret}
-# KEY_ACCESS_TOKEN = "nexus:auth:access_token"     # string
-# KEY_LAST_SYNC = "nexus:sync:last"                # string timestamp
-
-# MARKET_KEY_PREFIX = "nexus:market:"              # nexus:market:{token}
-# SETTINGS_KEY_PREFIX = "nexus:settings:"          # nexus:settings:{side}
-
-# KEY_UNIVERSE_TOKENS = "nexus:universe:tokens"    # json list[int]
-# KEY_UNIVERSE_SYMBOLS = "nexus:universe:symbols"  # json list[str]
-# KEY_UNIVERSE_UPDATED = "nexus:universe:updated_at"
-
-# TRADE_COUNT_PREFIX = "nexus:tradecount:"         # nexus:tradecount:{side} -> int daily
-# TRADE_COUNT_DATE = "nexus:tradecount:date"       # YYYY-MM-DD
-
-# # Create one global redis client
-# if REDIS_URL:
-#     r = redis.from_url(REDIS_URL, decode_responses=True)
-# else:
-#     r = redis.Redis(
-#         host=REDIS_HOST,
-#         port=REDIS_PORT,
-#         password=REDIS_PASSWORD,
-#         db=REDIS_DB,
-#         decode_responses=True,
-#     )
-
-
-# class TradeControl:
-#     # -----------------------------
-#     # API CONFIG / AUTH
-#     # -----------------------------
-#     @staticmethod
-#     async def save_config(api_key: str, api_secret: str) -> bool:
-#         try:
-#             await r.set(KEY_API_CONFIG, json.dumps({"api_key": api_key, "api_secret": api_secret}))
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save api config: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_config() -> Tuple[str, str]:
-#         try:
-#             raw = await r.get(KEY_API_CONFIG)
-#             if not raw:
-#                 return "", ""
-#             data = json.loads(raw)
-#             return (data.get("api_key", "") or "", data.get("api_secret", "") or "")
-#         except Exception as e:
-#             logger.error(f"Failed to get api config: {e}")
-#             return "", ""
-
-#     @staticmethod
-#     async def save_access_token(access_token: str) -> bool:
-#         try:
-#             await r.set(KEY_ACCESS_TOKEN, access_token)
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save access token: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_access_token() -> str:
-#         try:
-#             return (await r.get(KEY_ACCESS_TOKEN)) or ""
-#         except Exception as e:
-#             logger.error(f"Failed to get access token: {e}")
-#             return ""
-
-#     # -----------------------------
-#     # MARKET DATA CACHE
-#     # -----------------------------
-#     @staticmethod
-#     async def save_market_data(token: str, market_data: Dict[str, Any]) -> bool:
-#         """
-#         Saves market cache per token.
-#         Key: nexus:market:{token}
-#         """
-#         try:
-#             key = f"{MARKET_KEY_PREFIX}{token}"
-#             await r.set(key, json.dumps(market_data))
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save market data {token}: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_market_data(token: str) -> Dict[str, Any]:
-#         try:
-#             key = f"{MARKET_KEY_PREFIX}{token}"
-#             raw = await r.get(key)
-#             return json.loads(raw) if raw else {}
-#         except Exception as e:
-#             logger.error(f"Failed to get market data {token}: {e}")
-#             return {}
-
-#     @staticmethod
-#     async def get_all_market_data() -> Dict[str, Dict[str, Any]]:
-#         """
-#         Returns dict token_str -> market_data
-#         """
-#         try:
-#             pattern = f"{MARKET_KEY_PREFIX}*"
-#             keys = await r.keys(pattern)
-#             if not keys:
-#                 return {}
-#             vals = await r.mget(keys)
-
-#             out: Dict[str, Dict[str, Any]] = {}
-#             for k, v in zip(keys, vals):
-#                 if not v:
-#                     continue
-#                 token = k.replace(MARKET_KEY_PREFIX, "")
-#                 try:
-#                     out[token] = json.loads(v)
-#                 except Exception:
-#                     continue
-#             return out
-#         except Exception as e:
-#             logger.error(f"Failed to get all market data: {e}")
-#             return {}
-
-#     @staticmethod
-#     async def delete_market_data(token: str) -> bool:
-#         """
-#         Deletes one instrument market cache entry: nexus:market:{token}
-#         (useful when it fails SMA filter so stale data doesn't remain)
-#         """
-#         try:
-#             key = f"{MARKET_KEY_PREFIX}{token}"
-#             await r.delete(key)
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to delete market data {token}: {e}")
-#             return False
-
-#     @staticmethod
-#     async def set_last_sync() -> bool:
-#         try:
-#             await r.set(KEY_LAST_SYNC, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to set last sync: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_last_sync() -> str:
-#         try:
-#             return (await r.get(KEY_LAST_SYNC)) or ""
-#         except Exception as e:
-#             logger.error(f"Failed to get last sync: {e}")
-#             return ""
-
-#     # -----------------------------
-#     # STRATEGY SETTINGS (PERSISTED)
-#     # -----------------------------
-#     @staticmethod
-#     async def save_strategy_settings(side: str, cfg: dict) -> bool:
-#         try:
-#             key = f"{SETTINGS_KEY_PREFIX}{side}"
-#             await r.set(key, json.dumps(cfg))
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save strategy settings {side}: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_strategy_settings(side: str) -> dict:
-#         try:
-#             key = f"{SETTINGS_KEY_PREFIX}{side}"
-#             val = await r.get(key)
-#             return json.loads(val) if val else {}
-#         except Exception as e:
-#             logger.error(f"Failed to get strategy settings {side}: {e}")
-#             return {}
-
-#     # -----------------------------
-#     # SUBSCRIBE UNIVERSE (ELIGIBLE TOKENS)
-#     # -----------------------------
-#     @staticmethod
-#     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:
-#         """
-#         Store eligible instrument tokens to subscribe all day.
-#         """
-#         try:
-#             await r.set(KEY_UNIVERSE_TOKENS, json.dumps([int(x) for x in tokens]))
-#             if symbols is not None:
-#                 await r.set(KEY_UNIVERSE_SYMBOLS, json.dumps(list(symbols)))
-#             await r.set(KEY_UNIVERSE_UPDATED, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save subscribe universe: {e}")
-#             return False
-
-#     @staticmethod
-#     async def get_subscribe_universe_tokens() -> List[int]:
-#         """
-#         Read eligible instrument tokens list.
-#         """
-#         try:
-#             raw = await r.get(KEY_UNIVERSE_TOKENS)
-#             if not raw:
-#                 return []
-#             data = json.loads(raw)
-#             return [int(x) for x in data]
-#         except Exception as e:
-#             logger.error(f"Failed to get subscribe universe tokens: {e}")
-#             return []
-
-#     @staticmethod
-#     async def get_subscribe_universe_symbols() -> List[str]:
-#         try:
-#             raw = await r.get(KEY_UNIVERSE_SYMBOLS)
-#             if not raw:
-#                 return []
-#             data = json.loads(raw)
-#             return [str(x) for x in data]
-#         except Exception as e:
-#             logger.error(f"Failed to get subscribe universe symbols: {e}")
-#             return []
-
-#     @staticmethod
-#     async def get_subscribe_universe_updated_at() -> str:
-#         try:
-#             return (await r.get(KEY_UNIVERSE_UPDATED)) or ""
-#         except Exception as e:
-#             logger.error(f"Failed to get subscribe universe updated_at: {e}")
-#             return ""
-
-#     # -----------------------------
-#     # DAILY TRADE LIMIT COUNTERS
-#     # -----------------------------
-#     @staticmethod
-#     async def _roll_trade_count_if_new_day() -> None:
-#         """
-#         Ensure trade counters reset once per day (IST).
-#         """
-#         today = datetime.now(IST).strftime("%Y-%m-%d")
-#         try:
-#             stored = await r.get(TRADE_COUNT_DATE)
-#             if stored != today:
-#                 # New day: delete all counters
-#                 keys = await r.keys(f"{TRADE_COUNT_PREFIX}*")
-#                 if keys:
-#                     await r.delete(*keys)
-#                 await r.set(TRADE_COUNT_DATE, today)
-#         except Exception as e:
-#             logger.error(f"Trade count roll error: {e}")
-
-#     @staticmethod
-#     async def can_trade(side: str, max_trades: int) -> bool:
-#         """
-#         Returns True if side has remaining trades for the day.
-#         NOTE: This function is used by engines before placing orders.
-#         """
-#         try:
-#             await TradeControl._roll_trade_count_if_new_day()
-#             key = f"{TRADE_COUNT_PREFIX}{side}"
-#             current = await r.get(key)
-#             current_n = int(current) if current else 0
-#             if current_n >= int(max_trades):
-#                 return False
-#             # increment and allow
-#             await r.incr(key)
-#             return True
-#         except Exception as e:
-#             logger.error(f"can_trade failed for {side}: {e}")
-#             # safest: block trade if counter broken
-#             return False
-
-#     # -----------------------------
-#     # UTIL
-#     # -----------------------------
-#     @staticmethod
-#     async def ping() -> bool:
-#         try:
-#             return bool(await r.ping())
-#         except Exception:
-#             return False
-# redis_manager.py
 import os
 import json
-import ssl
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, List, Tuple
 
 import pytz
@@ -336,16 +10,10 @@ import redis.asyncio as redis
 logger = logging.getLogger("Redis_Manager")
 IST = pytz.timezone("Asia/Kolkata")
 
-# Global singleton client (lazy init)
 _r: Optional[redis.Redis] = None
 
 
 def _redis_url() -> str:
-    """
-    Prefer TLS url on Heroku. Heroku provides:
-      - REDIS_TLS_URL (rediss://...)
-      - REDIS_URL (redis://...)
-    """
     return (
         os.getenv("REDIS_TLS_URL")
         or os.getenv("REDIS_URL")
@@ -354,15 +22,13 @@ def _redis_url() -> str:
     )
 
 
+def _seconds_until_ist_midnight() -> int:
+    now = datetime.now(IST)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(60, int((midnight - now).total_seconds()))
+
+
 async def get_redis() -> redis.Redis:
-    """
-    Lazy init Redis client with Heroku-friendly TLS settings.
-    
-    Fix for: AbstractConnection.__init__() got an unexpected keyword argument 'ssl'
-    - When using from_url with a 'rediss://' scheme, redis-py already knows to use SSL.
-    - Adding 'ssl=True' manually causes a conflict in the AbstractConnection constructor.
-    - We only need to provide 'ssl_cert_reqs' as None for Heroku's self-signed certs.
-    """
     global _r
     if _r is not None:
         return _r
@@ -371,32 +37,24 @@ async def get_redis() -> redis.Redis:
     if not url:
         raise RuntimeError("Redis URL not set. Set REDIS_TLS_URL or REDIS_URL in Heroku config vars.")
 
-    # Base Redis client kwargs
     kwargs = dict(
-        decode_responses=True,             # store strings (JSON) cleanly
+        decode_responses=True,
         socket_timeout=10,
         socket_connect_timeout=10,
         retry_on_timeout=True,
         health_check_interval=30,
     )
 
-    # TLS handling for rediss://
     if url.startswith("rediss://"):
-        # ✅ FIX: Do NOT pass 'ssl=True' here when using from_url.
-        # The 'rediss' prefix in the URL already triggers SSL logic.
-        # We only pass the certificate requirement bypass for Heroku.
-        kwargs.update(
-            ssl_cert_reqs=None, 
-        )
+        kwargs.update(ssl_cert_reqs=None)
 
     try:
-        # Use from_url which parses the scheme and applies SSL logic internally
         _r = redis.from_url(url, **kwargs)
         await _r.ping()
         logger.info("✅ Redis connected successfully.")
     except Exception as e:
         logger.error(f"❌ Redis connection failed: {e}")
-        _r = None # Reset so next call retries
+        _r = None
         raise
 
     return _r
@@ -452,8 +110,7 @@ class TradeControl:
             return ""
 
     # -----------------------------
-    # MARKET CACHE (SMA/PDH/PDL/PREV_CLOSE)
-    # key: nexus:market:{token}
+    # MARKET CACHE
     # -----------------------------
     @staticmethod
     async def save_market_data(token: str, market_data: dict) -> bool:
@@ -479,9 +136,6 @@ class TradeControl:
 
     @staticmethod
     async def delete_market_data(token: str) -> bool:
-        """
-        Deletes one instrument market cache entry: nexus:market:{token}
-        """
         try:
             r = await get_redis()
             key = f"nexus:market:{token}"
@@ -493,9 +147,6 @@ class TradeControl:
 
     @staticmethod
     async def get_all_market_data() -> Dict[str, dict]:
-        """
-        Returns dict: { token_str: {...market_data...}, ... }
-        """
         try:
             r = await get_redis()
             out: Dict[str, dict] = {}
@@ -586,10 +237,179 @@ class TradeControl:
             return []
 
     # -----------------------------
-    # TRADE LIMIT
+    # ATOMIC SIDE LIMIT RESERVATION (prevents "consume on failure")
+    # -----------------------------
+    _LUA_RESERVE_SIDE = r"""
+    local key = KEYS[1]
+    local limit = tonumber(ARGV[1])
+    local ttl = tonumber(ARGV[2])
+
+    local cur = tonumber(redis.call('GET', key) or '0')
+    if cur >= limit then
+      return 0
+    end
+
+    local newv = redis.call('INCR', key)
+    if newv == 1 then
+      redis.call('EXPIRE', key, ttl)
+    end
+
+    if newv > limit then
+      redis.call('DECR', key)
+      return 0
+    end
+
+    return 1
+    """
+
+    @staticmethod
+    async def reserve_side_trade(side: str, limit: int) -> bool:
+        """
+        Reserves 1 slot for this side for today (IST). If order fails, call rollback_side_trade().
+        """
+        try:
+            r = await get_redis()
+            ttl = _seconds_until_ist_midnight()
+            key = f"nexus:trades:side:{datetime.now(IST).strftime('%Y%m%d')}:{side}"
+            ok = await r.eval(TradeControl._LUA_RESERVE_SIDE, 1, key, int(limit), int(ttl))
+            return bool(ok)
+        except Exception as e:
+            logger.error(f"reserve_side_trade failed for {side}: {e}")
+            return False
+
+    @staticmethod
+    async def rollback_side_trade(side: str) -> bool:
+        try:
+            r = await get_redis()
+            key = f"nexus:trades:side:{datetime.now(IST).strftime('%Y%m%d')}:{side}"
+            val = await r.get(key)
+            if val is None:
+                return True
+            cur = int(val or 0)
+            if cur > 0:
+                await r.decr(key)
+            return True
+        except Exception as e:
+            logger.error(f"rollback_side_trade failed for {side}: {e}")
+            return False
+
+    # -----------------------------
+    # ATOMIC PER-SYMBOL LIMIT + OPEN LOCK (2 trades/symbol/day, 2nd only after close)
+    # -----------------------------
+    _LUA_RESERVE_SYMBOL = r"""
+    local count_key = KEYS[1]
+    local open_key  = KEYS[2]
+
+    local max_trades = tonumber(ARGV[1])
+    local ttl = tonumber(ARGV[2])
+
+    if redis.call('EXISTS', open_key) == 1 then
+      return {0, 'OPEN'}
+    end
+
+    local newv = redis.call('INCR', count_key)
+    if newv == 1 then
+      redis.call('EXPIRE', count_key, ttl)
+    end
+
+    if newv > max_trades then
+      redis.call('DECR', count_key)
+      return {0, 'MAX'}
+    end
+
+    local ok = redis.call('SET', open_key, '1', 'NX', 'EX', ttl)
+    if not ok then
+      redis.call('DECR', count_key)
+      return {0, 'OPEN'}
+    end
+
+    return {1, tostring(newv)}
+    """
+
+    @staticmethod
+    async def reserve_symbol_trade(symbol: str, max_trades: int = 2) -> Tuple[bool, str]:
+        """
+        Atomically:
+          - block if symbol already has open lock
+          - increment today's trade count for symbol (cap max_trades)
+          - set open lock (expires at IST midnight for safety)
+        If order fails, call rollback_symbol_trade().
+        """
+        try:
+            r = await get_redis()
+            day = datetime.now(IST).strftime("%Y%m%d")
+            ttl = _seconds_until_ist_midnight()
+            count_key = f"nexus:trades:symbol:{day}:{symbol}"
+            open_key = f"nexus:pos:open:{day}:{symbol}"
+
+            res = await r.eval(TradeControl._LUA_RESERVE_SYMBOL, 2, count_key, open_key, int(max_trades), int(ttl))
+            # res is array [0/1, reason_or_count]
+            ok = bool(int(res[0]))
+            msg = str(res[1])
+            return ok, msg
+        except Exception as e:
+            logger.error(f"reserve_symbol_trade failed for {symbol}: {e}")
+            return False, "ERR"
+
+    @staticmethod
+    async def rollback_symbol_trade(symbol: str) -> bool:
+        """
+        If order placement fails AFTER reserve_symbol_trade(), rollback:
+          - delete open lock
+          - decrement count (if >0)
+        """
+        try:
+            r = await get_redis()
+            day = datetime.now(IST).strftime("%Y%m%d")
+            count_key = f"nexus:trades:symbol:{day}:{symbol}"
+            open_key = f"nexus:pos:open:{day}:{symbol}"
+            pipe = r.pipeline()
+            pipe.delete(open_key)
+            pipe.get(count_key)
+            out = await pipe.execute()
+            val = out[1]
+            if val is not None and int(val or 0) > 0:
+                await r.decr(count_key)
+            return True
+        except Exception as e:
+            logger.error(f"rollback_symbol_trade failed for {symbol}: {e}")
+            return False
+
+    @staticmethod
+    async def release_symbol_lock(symbol: str) -> bool:
+        """
+        Call on successful close to allow 2nd trade (if count < max_trades).
+        """
+        try:
+            r = await get_redis()
+            day = datetime.now(IST).strftime("%Y%m%d")
+            open_key = f"nexus:pos:open:{day}:{symbol}"
+            await r.delete(open_key)
+            return True
+        except Exception as e:
+            logger.error(f"release_symbol_lock failed for {symbol}: {e}")
+            return False
+
+    @staticmethod
+    async def get_symbol_trade_count(symbol: str) -> int:
+        try:
+            r = await get_redis()
+            day = datetime.now(IST).strftime("%Y%m%d")
+            count_key = f"nexus:trades:symbol:{day}:{symbol}"
+            v = await r.get(count_key)
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    # -----------------------------
+    # LEGACY METHODS (kept for compatibility, but engines now use reserve_* above)
     # -----------------------------
     @staticmethod
     async def can_trade(side: str, limit: int) -> bool:
+        """
+        Legacy: per-side counter without rollback on failure.
+        Keep for backward compatibility; prefer reserve_side_trade().
+        """
         try:
             r = await get_redis()
             key = f"nexus:trades:{side}"

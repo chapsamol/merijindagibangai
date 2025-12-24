@@ -1,3705 +1,7 @@
-# # import asyncio
-# # import os
-# # import logging
-# # import threading
-# # import json
-# # from datetime import datetime, timedelta
-# # import pytz
-# # from typing import Dict, List, Optional, Set
-
-# # # Core FastAPI & Server
-# # from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-# # from fastapi.responses import HTMLResponse, RedirectResponse
-# # from fastapi.middleware.cors import CORSMiddleware
-# # import uvicorn
-
-# # # Kite Connect SDK
-# # from kiteconnect import KiteConnect, KiteTicker
-
-# # # --- CRITICAL FIX 1: TWISTED SIGNAL BYPASS (FOR HEROKU) ---
-# # from twisted.internet import reactor
-# # _original_run = reactor.run
-# # def _patched_reactor_run(*args, **kwargs):
-# #     kwargs['installSignalHandlers'] = False
-# #     return _original_run(*args, **kwargs)
-# # reactor.run = _patched_reactor_run
-
-# # # High-Performance Event Loop
-# # try:
-# #     import uvloop
-# #     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-# # except ImportError:
-# #     pass
-
-# # # Custom Engine Modules & Managers
-# # from breakout_engine import BreakoutEngine
-# # from momentum_engine import MomentumEngine
-# # from redis_manager import TradeControl
-
-# # # --- LOGGING SETUP ---
-# # logging.basicConfig(
-# #     level=logging.INFO,
-# #     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-# #     datefmt='%Y-%m-%d %H:%M:%S'
-# # )
-# # logger = logging.getLogger("Nexus_Async_Core")
-# # IST = pytz.timezone("Asia/Kolkata")
-
-# # # --- GLOBAL TICK COUNTER FOR HEARTBEAT ---
-# # TICK_STATS = {"received": 0, "last_logged": datetime.now()}
-
-# # # --- FASTAPI APP ---
-# # app = FastAPI(strict_slashes=False)
-# # app.add_middleware(
-# #     CORSMiddleware, 
-# #     allow_origins=["*"], 
-# #     allow_methods=["*"], 
-# #     allow_headers=["*"]
-# # )
-
-# # STOCK_INDEX_MAPPING = {
-# #     'MRF': 'NIFTY 500',
-# #     '3MINDIA': 'NIFTY 500',
-# #     'HONAUT': 'NIFTY 500',
-# #     'ABBOTINDIA': 'NIFTY 500',
-# #     'JSWHL': 'NIFTY 500',
-# #     'POWERINDIA': 'NIFTY 500',
-# #     'PTCIL': 'NIFTY 500',
-# #     'FORCEMOT': 'NIFTY 500',
-# #     'NEULANDLAB': 'NIFTY 500',
-# #     'LMW': 'NIFTY 500',
-# #     'TVSHLTD': 'NIFTY 500',
-# #     'MAHSCOOTER': 'NIFTY 500',
-# #     'ZFCVINDIA': 'NIFTY 500',
-# #     'PGHH': 'NIFTY 500',
-# #     'BAJAJHLDNG': 'NIFTY 500',
-# #     'DYNAMATECH': 'NIFTY 500',
-# #     'ASTRAZEN': 'NIFTY 500',
-# #     'APARINDS': 'NIFTY 500',
-# #     'GILLETTE': 'NIFTY 500',
-# #     'WENDT': 'NIFTY 500',
-# #     'TASTYBITE': 'NIFTY 500',
-# #     'VOLTAMP': 'NIFTY 500',
-# #     'CRAFTSMAN': 'NIFTY 500',
-# #     'NSIL': 'NIFTY 500',
-# #     'ESABINDIA': 'NIFTY 500',
-# #     'NAVINFLUOR': 'NIFTY 500',
-# #     'ICRA': 'NIFTY 500',
-# #     'LINDEINDIA': 'NIFTY 500',
-# #     'ATUL': 'NIFTY 500',
-# #     'VSTTILLERS': 'NIFTY 500',
-# #     'JKCEMENT': 'NIFTY 500',
-# #     'PGHL': 'NIFTY 500',
-# #     'LUMAXIND': 'NIFTY 500',
-# #     'BLUEDART': 'NIFTY 500',
-# #     'CERA': 'NIFTY 500',
-# #     'PILANIINVS': 'NIFTY 500',
-# #     'FOSECOIND': 'NIFTY 500',
-# #     'VADILALIND': 'NIFTY 500',
-# #     'KICL': 'NIFTY 500',
-# #     'PFIZER': 'NIFTY 500',
-# #     'SUNDARMFIN': 'NIFTY 500',
-# #     'ORISSAMINE': 'NIFTY 500',
-# #     'LTTS': 'NIFTY 500',
-# #     'SANOFICONR': 'NIFTY 500',
-# #     'CRISIL': 'NIFTY 500',
-# #     'ECLERX': 'NIFTY 500',
-# #     'FINEORG': 'NIFTY 500',
-# #     'BAYERCROP': 'NIFTY 500',
-# #     'TVSSRICHAK': 'NIFTY 500',
-# #     'SANOFI': 'NIFTY 500',
-# #     'SHILCTECH': 'NIFTY 500',
-# #     'BASF': 'NIFTY 500',
-# #     'KINGFA': 'NIFTY 500',
-# #     'SCHAEFFLER': 'NIFTY 500',
-# #     'SMLMAH': 'NIFTY 500',
-# #     'AIAENG': 'NIFTY 500',
-# #     'CEATLTD': 'NIFTY 500',
-# #     'SWARAJENG': 'NIFTY 500',
-# #     'GRWRHITECH': 'NIFTY 500',
-# #     'ESCORTS': 'NIFTY 500',
-# #     'BANARISUG': 'NIFTY 500',
-# #     'AKZOINDIA': 'NIFTY 500',
-# #     'INGERRAND': 'NIFTY 500',
-# #     'VHL': 'NIFTY 500',
-# #     'FLUOROCHEM': 'NIFTY 500',
-# #     'KIRLOSIND': 'NIFTY 500',
-# #     'KMEW': 'NIFTY 500',
-# #     'RADICO': 'NIFTY 500',
-# #     'NETWEB': 'NIFTY 500',
-# #     'THANGAMAYL': 'NIFTY 500',
-# #     'SHRIPISTON': 'NIFTY 500',
-# #     'PRIVISCL': 'NIFTY 500',
-# #     'TIMKEN': 'NIFTY 500',
-# #     'GVT&D': 'NIFTY 500',
-# #     'ETHOSLTD': 'NIFTY 500',
-# #     'TCPLPACK': 'NIFTY 500',
-# #     'WAAREEENER': 'NIFTY 500',
-# #     'ANANDRATHI': 'NIFTY 500',
-# #     'NDGL': 'NIFTY 500',
-# #     'ENRIN': 'NIFTY 500',
-# #     'LALPATHLAB': 'NIFTY 500',
-# #     'THERMAX': 'NIFTY 500',
-# #     'GODFRYPHLP': 'NIFTY 500',
-# #     'BBL': 'NIFTY 500',
-# #     'CARTRADE': 'NIFTY 500',
-# #     'AJANTPHARM': 'NIFTY 500',
-# #     'BHARATRAS': 'NIFTY 500',
-# #     'ENDURANCE': 'NIFTY 500',
-# #     'PRUDENT': 'NIFTY 500',
-# #     'AIIL': 'NIFTY 500',
-# #     'GLAXO': 'NIFTY 500',
-# #     'DATAPATTNS': 'NIFTY 500',
-# #     'DOMS': 'NIFTY 500',
-# #     'RATNAMANI': 'NIFTY 500',
-# #     'SHAILY': 'NIFTY 500',
-# #     'INTERARCH': 'NIFTY 500',
-# #     'GRSE': 'NIFTY 500',
-# #     'HONDAPOWER': 'NIFTY 500',
-# #     'BALKRISIND': 'NIFTY 500',
-# #     'MTARTECH': 'NIFTY 500',
-# #     'HYUNDAI': 'NIFTY 500',
-# #     'JUBLCPL': 'NIFTY 500',
-# #     'COROMANDEL': 'NIFTY 500',
-# #     'RPGLIFE': 'NIFTY 500',
-# #     'KDDL': 'NIFTY 500',
-# #     'CENTUM': 'NIFTY 500',
-# #     'FIEMIND': 'NIFTY 500',
-# #     'SAFARI': 'NIFTY 500',
-# #     'NBIFIN': 'NIFTY 500',
-# #     'POWERMECH': 'NIFTY 500',
-# #     'INDIAMART': 'NIFTY 500',
-# #     'V2RETAIL': 'NIFTY 500',
-# #     'STYLAMIND': 'NIFTY 500',
-# #     'ANUP': 'NIFTY 500',
-# #     'TIIL': 'NIFTY 500',
-# #     'MASTEK': 'NIFTY 500',
-# #     'E2E': 'NIFTY 500',
-# #     'STYRENIX': 'NIFTY 500',
-# #     'MPSLTD': 'NIFTY 500',
-# #     'GALAXYSURF': 'NIFTY 500',
-# #     'SUMMITSEC': 'NIFTY 500',
-# #     'CAPLIPOINT': 'NIFTY 500',
-# #     'CHOLAHLDNG': 'NIFTY 500',
-# #     'TEGA': 'NIFTY 500',
-# #     'METROPOLIS': 'NIFTY 500',
-# #     'LGBBROSLTD': 'NIFTY 500',
-# #     'POLYMED': 'NIFTY 500',
-# #     'AUTOAXLES': 'NIFTY 500',
-# #     'NH': 'NIFTY 500',
-# #     'BBTC': 'NIFTY 500',
-# #     'GRAVITA': 'NIFTY 500',
-# #     'SKFINDIA': 'NIFTY 500',
-# #     'CIGNITITEC': 'NIFTY 500',
-# #     'TATACOMM': 'NIFTY 500',
-# #     'JBCHEPHARM': 'NIFTY 500',
-# #     'GRPLTD': 'NIFTY 500',
-# #     'ACC': 'NIFTY 500',
-# #     'GKWLIMITED': 'NIFTY 500',
-# #     'SANSERA': 'NIFTY 500',
-# #     'BEML': 'NIFTY 500',
-# #     'AFFLE': 'NIFTY 500',
-# #     'BHARTIHEXA': 'NIFTY 500',
-# #     'GLAND': 'NIFTY 500',
-# #     'ABREL': 'NIFTY 500',
-# #     'ZOTA': 'NIFTY 500',
-# #     'SJS': 'NIFTY 500',
-# #     'ACUTAAS': 'NIFTY 500',
-# #     'TBOTEK': 'NIFTY 500',
-# #     'UBL': 'NIFTY 500',
-# #     'IKS': 'NIFTY 500',
-# #     'MAPMYINDIA': 'NIFTY 500',
-# #     'BETA': 'NIFTY 500',
-# #     'KIRLOSBROS': 'NIFTY 500',
-# #     'VEEDOL': 'NIFTY 500',
-# #     'ONESOURCE': 'NIFTY 500',
-# #     'IFBIND': 'NIFTY 500',
-# #     'AZAD': 'NIFTY 500',
-# #     'HESTERBIO': 'NIFTY 500',
-# #     'TEAMLEASE': 'NIFTY 500',
-# #     'COCHINSHIP': 'NIFTY 500',
-# #     'INDOTECH': 'NIFTY 500',
-# #     'THEJO': 'NIFTY 500',
-# #     'ALKYLAMINE': 'NIFTY 500',
-# #     'VINATIORGA': 'NIFTY 500',
-# #     'PGIL': 'NIFTY 500',
-# #     'GRINDWELL': 'NIFTY 500',
-# #     'YASHO': 'NIFTY 500',
-# #     'ERIS': 'NIFTY 500',
-# #     'LGEINDIA': 'NIFTY 500',
-# #     'AAVAS': 'NIFTY 500',
-# #     'BIRLANU': 'NIFTY 500',
-# #     'CPPLUS': 'NIFTY 500',
-# #     'CARERATING': 'NIFTY 500',
-# #     'EIMCOELECO': 'NIFTY 500',
-# #     'DEEPAKNTR': 'NIFTY 500',
-# #     'JINDALPHOT': 'NIFTY 500',
-# #     'PIRAMALFIN': 'NIFTY 500',
-# #     'SOLEX': 'NIFTY 500',
-# #     'HIRECT': 'NIFTY 500',
-# #     'ARMANFIN': 'NIFTY 500',
-# #     'LUMAXTECH': 'NIFTY 500',
-# #     'IPCALAB': 'NIFTY 500',
-# #     'MIDWESTLTD': 'NIFTY 500',
-# #     'PIXTRANS': 'NIFTY 500',
-# #     'NPST': 'NIFTY 500',
-# #     'SOBHA': 'NIFTY 500',
-# #     'EMCURE': 'NIFTY 500',
-# #     'TATVA': 'NIFTY 500',
-# #     'DPABHUSHAN': 'NIFTY 500',
-# #     'WELINV': 'NIFTY 500',
-# #     'JCHAC': 'NIFTY 500',
-# #     'RRKABEL': 'NIFTY 500',
-# #     'VENKEYS': 'NIFTY 500',
-# #     'NILKAMAL': 'NIFTY 500',
-# #     'JLHL': 'NIFTY 500',
-# #     'VINDHYATEL': 'NIFTY 500',
-# #     'EPIGRAL': 'NIFTY 500',
-# #     'IMFA': 'NIFTY 500',
-# #     'ZENTEC': 'NIFTY 500',
-# #     'RAINBOW': 'NIFTY 500',
-# #     'CONCORDBIO': 'NIFTY 500',
-# #     'RANEHOLDIN': 'NIFTY 500',
-# #     'MANORAMA': 'NIFTY 500',
-# #     'WOCKPHARMA': 'NIFTY 500',
-# #     'NGLFINE': 'NIFTY 500',
-# #     'ACCELYA': 'NIFTY 500',
-# #     'ANURAS': 'NIFTY 500',
-# #     'POCL': 'NIFTY 500',
-# #     'CREDITACC': 'NIFTY 500',
-# #     'LLOYDSME': 'NIFTY 500',
-# #     'TRAVELFOOD': 'NIFTY 500',
-# #     'AMBIKCO': 'NIFTY 500',
-# #     'SUNCLAY': 'NIFTY 500',
-# #     'PUNJABCHEM': 'NIFTY 500',
-# #     'IFBAGRO': 'NIFTY 500',
-# #     'VENUSPIPES': 'NIFTY 500',
-# #     'WABAG': 'NIFTY 500',
-# #     'DCMSHRIRAM': 'NIFTY 500',
-# #     'NESCO': 'NIFTY 500',
-# #     'DEEPAKFERT': 'NIFTY 500',
-# #     'INDIGOPNTS': 'NIFTY 500',
-# #     'SASKEN': 'NIFTY 500',
-# #     'DODLA': 'NIFTY 500',
-# #     'SPECTRUM': 'NIFTY 500',
-# #     'OLECTRA': 'NIFTY 500',
-# #     'DHANUKA': 'NIFTY 500',
-# #     'APOLSINHOT': 'NIFTY 500',
-# #     'HOMEFIRST': 'NIFTY 500',
-# #     'KPIL': 'NIFTY 500',
-# #     'METROBRAND': 'NIFTY 500',
-# #     'DHUNINV': 'NIFTY 500',
-# #     'GULFOILLUB': 'NIFTY 500',
-# #     'MALLCOM': 'NIFTY 500',
-# #     'MEDANTA': 'NIFTY 500',
-# #     'AURIONPRO': 'NIFTY 500',
-# #     'UTIAMC': 'NIFTY 500',
-# #     'KIRLOSENG': 'NIFTY 500',
-# #     'INOXINDIA': 'NIFTY 500',
-# #     'RAYMONDLSL': 'NIFTY 500',
-# #     'MGL': 'NIFTY 500',
-# #     'SIGNATURE': 'NIFTY 500',
-# #     'BALAMINES': 'NIFTY 500',
-# #     'LUXIND': 'NIFTY 500',
-# #     'GESHIP': 'NIFTY 500',
-# #     'TECHNOE': 'NIFTY 500',
-# #     'NIBE': 'NIFTY 500',
-# #     'GOODLUCK': 'NIFTY 500',
-# #     'JPOLYINVST': 'NIFTY 500',
-# #     'NEOGEN': 'NIFTY 500',
-# #     'DIAMONDYD': 'NIFTY 500',
-# #     'JUBLPHARMA': 'NIFTY 500',
-# #     'ADOR': 'NIFTY 500',
-# #     'GMMPFAUDLR': 'NIFTY 500',
-# #     'HAPPYFORGE': 'NIFTY 500',
-# #     'BIRLACORPN': 'NIFTY 500',
-# #     'INDIAGLYCO': 'NIFTY 500',
-# #     'SANDESH': 'NIFTY 500',
-# #     'TTKHLTCARE': 'NIFTY 500',
-# #     'CHEVIOT': 'NIFTY 500',
-# #     'RAMCOCEM': 'NIFTY 500',
-# #     'KAJARIACER': 'NIFTY 500',
-# #     'PVRINOX': 'NIFTY 500',
-# #     'TCI': 'NIFTY 500',
-# #     'RACLGEAR': 'NIFTY 500',
-# #     'KIRLPNU': 'NIFTY 500',
-# #     'IMPAL': 'NIFTY 500',
-# #     'EIDPARRY': 'NIFTY 500',
-# #     'DREDGECORP': 'NIFTY 500',
-# #     'INTELLECT': 'NIFTY 500',
-# #     'SEAMECLTD': 'NIFTY 500',
-# #     'KERNEX': 'NIFTY 500',
-# #     'GRINFRA': 'NIFTY 500',
-# #     'CCL': 'NIFTY 500',
-# #     'EXPLEOSOL': 'NIFTY 500',
-# #     'HATSUN': 'NIFTY 500',
-# #     'GODREJIND': 'NIFTY 500',
-# #     'MACPOWER': 'NIFTY 500',
-# #     'WEALTH': 'NIFTY 500',
-# #     'GROBTEA': 'NIFTY 500',
-# #     'GMBREW': 'NIFTY 500',
-# #     'SUDARSCHEM': 'NIFTY 500',
-# #     'ENTERO': 'NIFTY 500',
-# #     'ASAHIINDIA': 'NIFTY 500',
-# #     'RPEL': 'NIFTY 500',
-# #     'AJMERA': 'NIFTY 500',
-# #     'VIJAYA': 'NIFTY 500',
-# #     'DSSL': 'NIFTY 500',
-# #     'KPRMILL': 'NIFTY 500',
-# #     'KSCL': 'NIFTY 500',
-# #     'GABRIEL': 'NIFTY 500',
-# #     'XPROINDIA': 'NIFTY 500',
-# #     'GLOBUSSPR': 'NIFTY 500',
-# #     'BATAINDIA': 'NIFTY 500',
-# #     'ASALCBR': 'NIFTY 500',
-# #     'AHLUCONT': 'NIFTY 500',
-# #     'JYOTICNC': 'NIFTY 500',
-# #     'SHARDAMOTR': 'NIFTY 500',
-# #     'WAAREERTL': 'NIFTY 500',
-# #     'MAITHANALL': 'NIFTY 500',
-# #     'UNIMECH': 'NIFTY 500',
-# #     'SUNDRMFAST': 'NIFTY 500',
-# #     'ELDEHSG': 'NIFTY 500',
-# #     'ACE': 'NIFTY 500',
-# #     'ARE&M': 'NIFTY 500',
-# #     'EXCELINDUS': 'NIFTY 500',
-# #     'CARYSIL': 'NIFTY 500',
-# #     'CHENNPETRO': 'NIFTY 500',
-# #     'WHIRLPOOL': 'NIFTY 500',
-# #     'ATLANTAELE': 'NIFTY 500',
-# #     'NUCLEUS': 'NIFTY 500',
-# #     'PREMIERENE': 'NIFTY 500',
-# #     'SHARDACROP': 'NIFTY 500',
-# #     'CANFINHOME': 'NIFTY 500',
-# #     'CLEAN': 'NIFTY 500',
-# #     'ASTRAMICRO': 'NIFTY 500',
-# #     'NATCOPHARM': 'NIFTY 500',
-# #     'KAUSHALYA': 'NIFTY 500',
-# #     'CHALET': 'NIFTY 500',
-# #     'SAILIFE': 'NIFTY 500',
-# #     'PSPPROJECT': 'NIFTY 500',
-# #     'UNIVCABLES': 'NIFTY 500',
-# #     'ALIVUS': 'NIFTY 500',
-# #     'BRIGADE': 'NIFTY 500',
-# #     'STAR': 'NIFTY 500',
-# #     'APLLTD': 'NIFTY 500',
-# #     'CARBORUNIV': 'NIFTY 500',
-# #     'GANECOS': 'NIFTY 500',
-# #     'AVALON': 'NIFTY 500',
-# #     'NAM-INDIA': 'NIFTY 500',
-# #     'SYMPHONY': 'NIFTY 500',
-# #     'ALLDIGI': 'NIFTY 500',
-# #     'SUBROS': 'NIFTY 500',
-# #     'POKARNA': 'NIFTY 500',
-# #     'AETHER': 'NIFTY 500',
-# #     'MOTILALOFS': 'NIFTY 500',
-# #     'INDIASHLTR': 'NIFTY 500',
-# #     'ALICON': 'NIFTY 500',
-# #     'NEWGEN': 'NIFTY 500',
-# #     'IZMO': 'NIFTY 500',
-# #     'ORCHPHARMA': 'NIFTY 500',
-# #     'YUKEN': 'NIFTY 500',
-# #     'GOKEX': 'NIFTY 500',
-# #     'ELECTHERM': 'NIFTY 500',
-# #     'CENTURYPLY': 'NIFTY 500',
-# #     'WHEELS': 'NIFTY 500',
-# #     'PASHUPATI': 'NIFTY 500',
-# #     'CEMPRO': 'NIFTY 500',
-# #     'POLYPLEX': 'NIFTY 500',
-# #     'FACT': 'NIFTY 500',
-# #     'DATAMATICS': 'NIFTY 500',
-# #     'PITTIENG': 'NIFTY 500',
-# #     'RIIL': 'NIFTY 500',
-# #     'NDRAUTO': 'NIFTY 500',
-# #     'GANESHHOU': 'NIFTY 500',
-# #     'HBLENGINE': 'NIFTY 500',
-# #     'ISGEC': 'NIFTY 500',
-# #     'AVANTIFEED': 'NIFTY 500',
-# #     'MEDPLUS': 'NIFTY 500',
-# #     'SHYAMMETL': 'NIFTY 500',
-# #     'SILVERTUC': 'NIFTY 500',
-# #     'INDNIPPON': 'NIFTY 500',
-# #     'TINNARUBR': 'NIFTY 500',
-# #     'WELCORP': 'NIFTY 500',
-# #     'SENORES': 'NIFTY 500',
-# #     'WINDLAS': 'NIFTY 500',
-# #     'CNL': 'NIFTY 500',
-# #     'JKLAKSHMI': 'NIFTY 500',
-# #     'KRN': 'NIFTY 500',
-# #     'PROTEAN': 'NIFTY 500',
-# #     'ALBERTDAVD': 'NIFTY 500',
-# #     'HDBFS': 'NIFTY 500',
-# #     'PKTEA': 'NIFTY 500',
-# #     'ICEMAKE': 'NIFTY 500',
-# #     'HEXT': 'NIFTY 500',
-# #     '63MOONS': 'NIFTY 500',
-# #     'VMART': 'NIFTY 500',
-# #     'BIL': 'NIFTY 500',
-# #     'NELCO': 'NIFTY 500',
-# #     'HGINFRA': 'NIFTY 500',
-# #     'DECCANCE': 'NIFTY 500',
-# #     'MANGLMCEM': 'NIFTY 500',
-# #     'GALAPREC': 'NIFTY 500',
-# #     'ABSLAMC': 'NIFTY 500',
-# #     'AEGISLOG': 'NIFTY 500',
-# #     'GANDHITUBE': 'NIFTY 500',
-# #     'RPSGVENT': 'NIFTY 500',
-# #     'CHOICEIN': 'NIFTY 500',
-# #     'TEMBO': 'NIFTY 500',
-# #     'ASHAPURMIN': 'NIFTY 500',
-# #     'SUPRIYA': 'NIFTY 500',
-# #     'RML': 'NIFTY 500',
-# #     'AARTIPHARM': 'NIFTY 500',
-# #     'FINCABLES': 'NIFTY 500',
-# #     'SYRMA': 'NIFTY 500',
-# #     'KSB': 'NIFTY 500',
-# #     'ZENSARTECH': 'NIFTY 500',
-# #     'KRSNAA': 'NIFTY 500',
-# #     'BIKAJI': 'NIFTY 500',
-# #     'SPAL': 'NIFTY 500',
-# #     'CONTROLPR': 'NIFTY 500',
-# #     'AGI': 'NIFTY 500',
-# #     'KSL': 'NIFTY 500',
-# #     'TATAINVEST': 'NIFTY 500',
-# #     'INNOVACAP': 'NIFTY 500',
-# #     'SVLL': 'NIFTY 500',
-# #     'CAPILLARY': 'NIFTY 500',
-# #     'COSMOFIRST': 'NIFTY 500',
-# #     'SCHNEIDER': 'NIFTY 500',
-# #     'SUNDROP': 'NIFTY 500',
-# #     'HCG': 'NIFTY 500',
-# #     'RVTH': 'NIFTY 500',
-# #     'JUSTDIAL': 'NIFTY 500',
-# #     'BANCOINDIA': 'NIFTY 500',
-# #     'DENORA': 'NIFTY 500',
-# #     'VENTIVE': 'NIFTY 500',
-# #     'JSLL': 'NIFTY 500',
-# #     'MONTECARLO': 'NIFTY 500',
-# #     'ASTEC': 'NIFTY 500',
-# #     'QPOWER': 'NIFTY 500',
-# #     'INSECTICID': 'NIFTY 500',
-# #     'YATHARTH': 'NIFTY 500',
-# #     'ANTHEM': 'NIFTY 500',
-# #     'SUDEEPPHRM': 'NIFTY 500',
-# #     'SALZERELEC': 'NIFTY 500',
-# #     'JUBLINGREA': 'NIFTY 500',
-# #     'INFOBEAN': 'NIFTY 500',
-# #     'KEC': 'NIFTY 500',
-# #     'BUTTERFLY': 'NIFTY 500',
-# #     'AMRUTANJAN': 'NIFTY 500',
-# #     'TDPOWERSYS': 'NIFTY 500',
-# #     'AGARIND': 'NIFTY 500',
-# #     'FAIRCHEMOR': 'NIFTY 500',
-# #     'ROUTE': 'NIFTY 500',
-# #     'SUNDRMBRAK': 'NIFTY 500',
-# #     'ROSSTECH': 'NIFTY 500',
-# #     'GARFIBRES': 'NIFTY 500',
-# #     'PARAS': 'NIFTY 500',
-# #     'KIMS': 'NIFTY 500',
-# #     'RATEGAIN': 'NIFTY 500',
-# #     'KALYANIFRG': 'NIFTY 500',
-# #     'RAMCOSYS': 'NIFTY 500',
-# #     'SPLPETRO': 'NIFTY 500',
-# #     'BLACKBUCK': 'NIFTY 500',
-# #     'SHAKTIPUMP': 'NIFTY 500',
-# #     'VARROC': 'NIFTY 500',
-# #     'SIYSIL': 'NIFTY 500',
-# #     'EUREKAFORB': 'NIFTY 500',
-# #     'ATHERENERG': 'NIFTY 500',
-# #     'TTKPRESTIG': 'NIFTY 500',
-# #     'SWELECTES': 'NIFTY 500',
-# #     'GLOSTERLTD': 'NIFTY 500',
-# #     'BALUFORGE': 'NIFTY 500',
-# #     'RUBICON': 'NIFTY 500',
-# #     'SUYOG': 'NIFTY 500',
-# #     'ABDL': 'NIFTY 500',
-# #     'ORKLAINDIA': 'NIFTY 500',
-# #     'STOVEKRAFT': 'NIFTY 500',
-# #     'EMUDHRA': 'NIFTY 500',
-# #     'ASTERDM': 'NIFTY 500',
-# #     'RAMRAT': 'NIFTY 500',
-# #     'PNGJL': 'NIFTY 500',
-# #     'PRICOLLTD': 'NIFTY 500',
-# #     'AJAXENGG': 'NIFTY 500',
-# #     'VIMTALABS': 'NIFTY 500',
-# #     'ARSSBL': 'NIFTY 500',
-# #     'MANYAVAR': 'NIFTY 500',
-# #     'ARVSMART': 'NIFTY 500',
-# #     'WEWORK': 'NIFTY 500',
-# #     'DIVGIITTS': 'NIFTY 500',
-# #     'GALLANTT': 'NIFTY 500',
-# #     'GODREJAGRO': 'NIFTY 500',
-# #     'SOLARA': 'NIFTY 500',
-# #     'ROSSARI': 'NIFTY 500',
-# #     'MINDACORP': 'NIFTY 500',
-# #     'TRANSRAILL': 'NIFTY 500',
-# #     'PAUSHAKLTD': 'NIFTY 500',
-# #     'SFL': 'NIFTY 500',
-# #     'GHCL': 'NIFTY 500',
-# #     'MOLDTKPAC': 'NIFTY 500',
-# #     'CELLO': 'NIFTY 500',
-# #     'JBMA': 'NIFTY 500',
-# #     'FIVESTAR': 'NIFTY 500',
-# #     'TCIEXP': 'NIFTY 500',
-# #     'NAVA': 'NIFTY 500',
-# #     'JKIL': 'NIFTY 500',
-# #     'SRM': 'NIFTY 500',
-# #     'SUNTV': 'NIFTY 500',
-# #     'KIRIINDUS': 'NIFTY 500',
-# #     'SANDHAR': 'NIFTY 500',
-# #     'MAHSEAMLES': 'NIFTY 500',
-# #     'BLUEJET': 'NIFTY 500',
-# #     'JARO': 'NIFTY 500',
-# #     'PICCADIL': 'NIFTY 500',
-# #     'TANLA': 'NIFTY 500',
-# #     'ITDC': 'NIFTY 500',
-# #     'RAMKY': 'NIFTY 500',
-# #     'WESTLIFE': 'NIFTY 500',
-# #     'ANANTRAJ': 'NIFTY 500',
-# #     'MARATHON': 'NIFTY 500',
-# #     'MATRIMONY': 'NIFTY 500',
-# #     'TIPSMUSIC': 'NIFTY 500',
-# #     'BORORENEW': 'NIFTY 500',
-# #     'STUDDS': 'NIFTY 500',
-# #     'WONDERLA': 'NIFTY 500',
-# #     'CARRARO': 'NIFTY 500',
-# #     'GRAPHITE': 'NIFTY 500',
-# #     'BERGEPAINT': 'NIFTY 500',
-# #     'EMAMILTD': 'NIFTY 500',
-# #     'RUSTOMJEE': 'NIFTY 500',
-# #     'OPTIEMUS': 'NIFTY 500',
-# #     'COHANCE': 'NIFTY 500',
-# #     'HEG': 'NIFTY 500',
-# #     'HNDFDS': 'NIFTY 500',
-# #     'TRITURBINE': 'NIFTY 500',
-# #     'SGIL': 'NIFTY 500',
-# #     'OSWALPUMPS': 'NIFTY 500',
-# #     'STEL': 'NIFTY 500',
-# #     'BLUESTONE': 'NIFTY 500',
-# #     'INDGN': 'NIFTY 500',
-# #     'KRISHANA': 'NIFTY 500',
-# #     'ARROWGREEN': 'NIFTY 500',
-# #     'GMDCLTD': 'NIFTY 500',
-# #     'KRYSTAL': 'NIFTY 500',
-# #     'LANDMARK': 'NIFTY 500',
-# #     'BBOX': 'NIFTY 500',
-# #     'RKFORGE': 'NIFTY 500',
-# #     'SILINV': 'NIFTY 500',
-# #     'EVERESTIND': 'NIFTY 500',
-# #     'WELENT': 'NIFTY 500',
-# #     'LEMERITE': 'NIFTY 500',
-# #     'SARDAEN': 'NIFTY 500',
-# #     'APOLLOTYRE': 'NIFTY 500',
-# #     'AVL': 'NIFTY 500',
-# #     'GUJALKALI': 'NIFTY 500',
-# #     'TMB': 'NIFTY 500',
-# #     'MAGADSUGAR': 'NIFTY 500',
-# #     'AGARWALEYE': 'NIFTY 500',
-# #     'JINDRILL': 'NIFTY 500',
-# #     'PREMEXPLN': 'NIFTY 500',
-# #     'ASAL': 'NIFTY 500',
-# #     'VISHNU': 'NIFTY 500',
-# #     'LATENTVIEW': 'NIFTY 500',
-# #     'JINDALPOLY': 'NIFTY 500',
-# #     'AWFIS': 'NIFTY 500',
-# #     'ARVINDFASN': 'NIFTY 500',
-# #     'SRHHYPOLTD': 'NIFTY 500',
-# #     'GNFC': 'NIFTY 500',
-# #     'HAPPSTMNDS': 'NIFTY 500',
-# #     'KKCL': 'NIFTY 500',
-# #     'ACI': 'NIFTY 500',
-# #     'UNIPARTS': 'NIFTY 500',
-# #     'AADHARHFC': 'NIFTY 500',
-# #     'DICIND': 'NIFTY 500',
-# #     'ELGIEQUIP': 'NIFTY 500',
-# #     'MAYURUNIQ': 'NIFTY 500',
-# #     'RAYMONDREL': 'NIFTY 500',
-# #     'ELECON': 'NIFTY 500',
-# #     'MANORG': 'NIFTY 500',
-# #     'TEJASNET': 'NIFTY 500',
-# #     'VESUVIUS': 'NIFTY 500',
-# #     'BAJAJELEC': 'NIFTY 500',
-# #     'NRAIL': 'NIFTY 500',
-# #     'SIRCA': 'NIFTY 500',
-# #     'TENNIND': 'NIFTY 500',
-# #     'LINCOLN': 'NIFTY 500',
-# #     'HERITGFOOD': 'NIFTY 500',
-# #     'SMARTWORKS': 'NIFTY 500',
-# #     'GOCOLORS': 'NIFTY 500',
-# #     'UFLEX': 'NIFTY 500',
-# #     'MSTCLTD': 'NIFTY 500',
-# #     'INDRAMEDCO': 'NIFTY 500',
-# #     'SHANTIGEAR': 'NIFTY 500',
-# #     'KRISHIVAL': 'NIFTY 500',
-# #     'MEDIASSIST': 'NIFTY 500',
-# #     'REPRO': 'NIFTY 500',
-# #     'ASKAUTOLTD': 'NIFTY 500',
-# #     'HSCL': 'NIFTY 500',
-# #     'STARHEALTH': 'NIFTY 500',
-# #     'FMGOETZE': 'NIFTY 500',
-# #     'CHEMFAB': 'NIFTY 500',
-# #     'HLEGLAS': 'NIFTY 500',
-# #     'TSFINV': 'NIFTY 500',
-# #     'FAZE3Q': 'NIFTY 500',
-# #     'SUMICHEM': 'NIFTY 500',
-# #     'SWANCORP': 'NIFTY 500',
-# #     'UNICHEMLAB': 'NIFTY 500',
-# #     'JKTYRE': 'NIFTY 500',
-# #     'TI': 'NIFTY 500',
-# #     'RAYMOND': 'NIFTY 500',
-# #     'SBCL': 'NIFTY 500',
-# #     'GRMOVER': 'NIFTY 500',
-# #     'SANATHAN': 'NIFTY 500',
-# #     'CENTENKA': 'NIFTY 500',
-# #     'HGS': 'NIFTY 500',
-# #     'VTL': 'NIFTY 500',
-# #     'DBL': 'NIFTY 500',
-# #     'RAJRATAN': 'NIFTY 500',
-# #     'JASH': 'NIFTY 500',
-# #     'AWHCL': 'NIFTY 500',
-# #     'SUPRAJIT': 'NIFTY 500',
-# #     'MAXESTATES': 'NIFTY 500',
-# #     'INNOVANA': 'NIFTY 500',
-# #     'UNITEDTEA': 'NIFTY 500',
-# #     'MANINDS': 'NIFTY 500',
-# #     'SANGAMIND': 'NIFTY 500',
-# #     'HEUBACHIND': 'NIFTY 500',
-# #     'RHIM': 'NIFTY 500',
-# #     'ATULAUTO': 'NIFTY 500',
-# #     'DEEPINDS': 'NIFTY 500',
-# #     'USHAMART': 'NIFTY 500',
-# #     'PRECOT': 'NIFTY 500',
-# #     'GUJAPOLLO': 'NIFTY 500',
-# #     'SHOPERSTOP': 'NIFTY 500',
-# #     'BALRAMCHIN': 'NIFTY 500',
-# #     'SKIPPER': 'NIFTY 500',
-# #     'SKMEGGPROD': 'NIFTY 500',
-# #     'THYROCARE': 'NIFTY 500',
-# #     'JSFB': 'NIFTY 500',
-# #     'CHAMBLFERT': 'NIFTY 500',
-# #     'IGARASHI': 'NIFTY 500',
-# #     'BSOFT': 'NIFTY 500',
-# #     'CYIENTDLM': 'NIFTY 500',
-# #     'DLINKINDIA': 'NIFTY 500',
-# #     'ZYDUSWELL': 'NIFTY 500',
-# #     'IDEAFORGE': 'NIFTY 500',
-# #     'NIPPOBATRY': 'NIFTY 500',
-# #     'KPIGREEN': 'NIFTY 500',
-# #     'AKUMS': 'NIFTY 500',
-# #     'SAKAR': 'NIFTY 500',
-# #     'MAMATA': 'NIFTY 500',
-# #     'HINDCOMPOS': 'NIFTY 500',
-# #     'SOMANYCERA': 'NIFTY 500',
-# #     'CEWATER': 'NIFTY 500',
-# #     'FDC': 'NIFTY 500',
-# #     'SWIGGY': 'NIFTY 500',
-# #     'ABCOTS': 'NIFTY 500',
-# #     'INDIACEM': 'NIFTY 500',
-# #     'GENESYS': 'NIFTY 500',
-# #     'EMSLIMITED': 'NIFTY 500',
-# #     'BAJAJHCARE': 'NIFTY 500',
-# #     'INDIANHUME': 'NIFTY 500',
-# #     'BFINVEST': 'NIFTY 500',
-# #     'NINSYS': 'NIFTY 500',
-# #     'MBAPL': 'NIFTY 500',
-# #     'WSTCSTPAPR': 'NIFTY 500',
-# #     'TIPSFILMS': 'NIFTY 500',
-# #     'TRUALT': 'NIFTY 500',
-# #     'IGPL': 'NIFTY 500',
-# #     'LENSKART': 'NIFTY 500',
-# #     'MEDICAMEQ': 'NIFTY 500',
-# #     'RELAXO': 'NIFTY 500',
-# #     'NIITMTS': 'NIFTY 500',
-# #     'RSYSTEMS': 'NIFTY 500',
-# #     'REPCOHOME': 'NIFTY 500',
-# #     'MAHLIFE': 'NIFTY 500',
-# #     'SUNTECK': 'NIFTY 500',
-# #     'RISHABH': 'NIFTY 500',
-# #     'AARTISURF': 'NIFTY 500',
-# #     'CIEINDIA': 'NIFTY 500',
-# #     'AFCONS': 'NIFTY 500',
-# #     'THELEELA': 'NIFTY 500',
-# #     'ANTELOPUS': 'NIFTY 500',
-# #     'GUJGASLTD': 'NIFTY 500',
-# #     'AARTIDRUGS': 'NIFTY 500',
-# #     'CUPID': 'NIFTY 500',
-# #     'MODINATUR': 'NIFTY 500',
-# #     'HPL': 'NIFTY 500',
-# #     'GOACARBON': 'NIFTY 500',
-# #     'CSBBANK': 'NIFTY 500',
-# #     'KRBL': 'NIFTY 500',
-# #     'GUJTHEM': 'NIFTY 500',
-# #     'BELLACASA': 'NIFTY 500',
-# #     'TAJGVK': 'NIFTY 500',
-# #     'SGFIN': 'NIFTY 500',
-# #     'KOLTEPATIL': 'NIFTY 500',
-# #     'SHREEPUSHK': 'NIFTY 500',
-# #     'ROHLTD': 'NIFTY 500',
-# #     'JAINREC': 'NIFTY 500',
-# #     'AVADHSUGAR': 'NIFTY 500',
-# #     'GICRE': 'NIFTY 500',
-# #     'HINDCOPPER': 'NIFTY 500',
-# #     'LTFOODS': 'NIFTY 500',
-# #     'DOLPHIN': 'NIFTY 500',
-# #     'EIHOTEL': 'NIFTY 500',
-# #     'MBEL': 'NIFTY 500',
-# #     'SAATVIKGL': 'NIFTY 500',
-# #     'SHIVALIK': 'NIFTY 500',
-# #     'TMCV': 'NIFTY 500',
-# #     'HARSHA': 'NIFTY 500',
-# #     'SOTL': 'NIFTY 500',
-# #     'APCOTEXIND': 'NIFTY 500',
-# #     'GOLDIAM': 'NIFTY 500',
-# #     'MEIL': 'NIFTY 500',
-# #     'JGCHEM': 'NIFTY 500',
-# #     'SAREGAMA': 'NIFTY 500',
-# #     'JKPAPER': 'NIFTY 500',
-# #     'BESTAGRO': 'NIFTY 500',
-# #     'PANACEABIO': 'NIFTY 500',
-# #     'PDSL': 'NIFTY 500',
-# #     'CREST': 'NIFTY 500',
-# #     'MMFL': 'NIFTY 500',
-# #     'EIHAHOTELS': 'NIFTY 500',
-# #     'TRIVENI': 'NIFTY 500',
-# #     'AARTIIND': 'NIFTY 500',
-# #     'HARIOMPIPE': 'NIFTY 500',
-# #     'KAYA': 'NIFTY 500',
-# #     'ELLEN': 'NIFTY 500',
-# #     'DOLLAR': 'NIFTY 500',
-# #     'VIPIND': 'NIFTY 500',
-# #     'IONEXCHANG': 'NIFTY 500',
-# #     'CMSINFO': 'NIFTY 500',
-# #     'SONATSOFTW': 'NIFTY 500',
-# #     'KALPATARU': 'NIFTY 500',
-# #     'THOMASCOTT': 'NIFTY 500',
-# #     'GUFICBIO': 'NIFTY 500',
-# #     'ZAGGLE': 'NIFTY 500',
-# #     'KPEL': 'NIFTY 500',
-# #     'TMPV': 'NIFTY 500',
-# #     'M&MFIN': 'NIFTY 500',
-# #     'MODIS': 'NIFTY 500',
-# #     'NUVOCO': 'NIFTY 500',
-# #     'KIOCL': 'NIFTY 500',
-# #     'RPTECH': 'NIFTY 500',
-# #     'ORIENTTECH': 'NIFTY 500',
-# #     'GODIGIT': 'NIFTY 500',
-# #     'KILITCH': 'NIFTY 500',
-# #     'FSL': 'NIFTY 500',
-# #     'GEECEE': 'NIFTY 500',
-# #     'SGMART': 'NIFTY 500',
-# #     'DYCL': 'NIFTY 500',
-# #     'SHREEJISPG': 'NIFTY 500',
-# #     'SHILPAMED': 'NIFTY 500',
-# #     'VGUARD': 'NIFTY 500',
-# #     'VIDHIING': 'NIFTY 500',
-# #     'RAILTEL': 'NIFTY 500',
-# #     'ASIANHOTNR': 'NIFTY 500',
-# #     'MOIL': 'NIFTY 500',
-# #     'SIS': 'NIFTY 500',
-# #     'EVEREADY': 'NIFTY 500',
-# #     'TATACAP': 'NIFTY 500',
-# #     'SOFTTECH': 'NIFTY 500',
-# #     'MAHLOG': 'NIFTY 500',
-# #     'MASFIN': 'NIFTY 500',
-# #     'SKYGOLD': 'NIFTY 500',
-# #     'ARIES': 'NIFTY 500',
-# #     'BAJAJINDEF': 'NIFTY 500',
-# #     'SMSPHARMA': 'NIFTY 500',
-# #     'BLS': 'NIFTY 500',
-# #     'IGIL': 'NIFTY 500',
-# #     'PARAGMILK': 'NIFTY 500',
-# #     'IIFLCAPS': 'NIFTY 500',
-# #     'BANSALWIRE': 'NIFTY 500',
-# #     'DENTA': 'NIFTY 500',
-# #     'ARVIND': 'NIFTY 500',
-# #     'NITINSPIN': 'NIFTY 500',
-# #     'RAMCOIND': 'NIFTY 500',
-# #     'ZUARIIND': 'NIFTY 500',
-# #     'ARIHANTSUP': 'NIFTY 500',
-# #     'KEYFINSERV': 'NIFTY 500',
-# #     'MHRIL': 'NIFTY 500',
-# #     'DIFFNKG': 'NIFTY 500',
-# #     'GOPAL': 'NIFTY 500',
-# #     'PCBL': 'NIFTY 500',
-# #     'GVPIL': 'NIFTY 500',
-# #     'SENCO': 'NIFTY 500',
-# #     'ADVENZYMES': 'NIFTY 500',
-# #     'SEMAC': 'NIFTY 500',
-# #     '5PAISA': 'NIFTY 500',
-# #     'ZODIAC': 'NIFTY 500',
-# #     'SANGHVIMOV': 'NIFTY 500',
-# #     'ITI': 'NIFTY 500',
-# #     'IRIS': 'NIFTY 500',
-# #     'MONARCH': 'NIFTY 500',
-# #     'GNA': 'NIFTY 500',
-# #     'PRAJIND': 'NIFTY 500',
-# #     'GENUSPOWER': 'NIFTY 500',
-# #     'GOCLCORP': 'NIFTY 500',
-# #     'TRF': 'NIFTY 500',
-# #     'EUROPRATIK': 'NIFTY 500',
-# #     'SASTASUNDR': 'NIFTY 500',
-# #     'MIDHANI': 'NIFTY 500',
-# #     'APOLLOPIPE': 'NIFTY 500',
-# #     'SHIVAUM': 'NIFTY 500',
-# #     'VLSFINANCE': 'NIFTY 500',
-# #     'BOROLTD': 'NIFTY 500',
-# #     'FLAIR': 'NIFTY 500',
-# #     'CRAMC': 'NIFTY 500',
-# #     'KAPSTON': 'NIFTY 500',
-# #     'DALMIASUG': 'NIFTY 500',
-# #     'NURECA': 'NIFTY 500',
-# #     'ASIANENE': 'NIFTY 500',
-# #     'EPACKPEB': 'NIFTY 500',
-# #     'STYL': 'NIFTY 500',
-# #     'EFCIL': 'NIFTY 500',
-# #     'ZUARI': 'NIFTY 500',
-# #     'APTUS': 'NIFTY 500',
-# #     'ASHIANA': 'NIFTY 500',
-# #     'CSLFINANCE': 'NIFTY 500',
-# #     'DVL': 'NIFTY 500',
-# #     'FIRSTCRY': 'NIFTY 500',
-# #     'GSPL': 'NIFTY 500',
-# #     'VSSL': 'NIFTY 500',
-# #     'KSOLVES': 'NIFTY 500',
-# #     'SOLARWORLD': 'NIFTY 500',
-# #     'ICIL': 'NIFTY 500',
-# #     'IVALUE': 'NIFTY 500',
-# #     'SALONA': 'NIFTY 500',
-# #     'NRBBEARING': 'NIFTY 500',
-# #     'S&SPOWER': 'NIFTY 500',
-# #     'OAL': 'NIFTY 500',
-# #     'SCPL': 'NIFTY 500',
-# #     'DDEVPLSTIK': 'NIFTY 500',
-# #     'IRMENERGY': 'NIFTY 500',
-# #     'JYOTHYLAB': 'NIFTY 500',
-# #     'PONNIERODE': 'NIFTY 500',
-# #     'SURAKSHA': 'NIFTY 500',
-# #     'CRIZAC': 'NIFTY 500',
-# #     'QUICKHEAL': 'NIFTY 500',
-# #     'TALBROAUTO': 'NIFTY 500',
-# #     'PRIMESECU': 'NIFTY 500',
-# #     'REDINGTON': 'NIFTY 500',
-# #     'TARIL': 'NIFTY 500',
-# #     'ARTEMISMED': 'NIFTY 500',
-# #     'TEAMGTY': 'NIFTY 500',
-# #     'LIBERTSHOE': 'NIFTY 500',
-# #     'EBGNG': 'NIFTY 500',
-# #     'MUTHOOTCAP': 'NIFTY 500',
-# #     'ONWARDTEC': 'NIFTY 500',
-# #     'WINDMACHIN': 'NIFTY 500',
-# #     'PANAMAPET': 'NIFTY 500',
-# #     'RITCO': 'NIFTY 500',
-# #     'GREENPLY': 'NIFTY 500',
-# #     'STYLEBAAZA': 'NIFTY 500',
-# #     'HINDWAREAP': 'NIFTY 500',
-# #     'INDOBORAX': 'NIFTY 500',
-# #     'VALIANTORG': 'NIFTY 500',
-# #     'JSWINFRA': 'NIFTY 500',
-# #     'CUB': 'NIFTY 500',
-# #     'SIMPLEXINF': 'NIFTY 500',
-# #     'DYNPRO': 'NIFTY 500',
-# #     'BECTORFOOD': 'NIFTY 500',
-# #     'SPANDANA': 'NIFTY 500',
-# #     'CPEDU': 'NIFTY 500',
-# #     'STERTOOLS': 'NIFTY 500',
-# #     'STARTECK': 'NIFTY 500',
-# #     'MWL': 'NIFTY 500',
-# #     'VRLLOG': 'NIFTY 500',
-# #     'ORIENTBELL': 'NIFTY 500',
-# #     'FINOPB': 'NIFTY 500',
-# #     'SRGHFL': 'NIFTY 500',
-# #     'QUADFUTURE': 'NIFTY 500',
-# #     'ALLTIME': 'NIFTY 500',
-# #     'LAXMIDENTL': 'NIFTY 500',
-# #     'TIL': 'NIFTY 500',
-# #     'LGHL': 'NIFTY 500',
-# #     'APEX': 'NIFTY 500',
-# #     'AGIIL': 'NIFTY 500',
-# #     'SURAJEST': 'NIFTY 500',
-# #     'RALLIS': 'NIFTY 500',
-# #     'CAMPUS': 'NIFTY 500',
-# #     'CAPITALSFB': 'NIFTY 500',
-# #     'NAHARCAP': 'NIFTY 500',
-# #     'DIAMINESQ': 'NIFTY 500',
-# #     'HONASA': 'NIFTY 500',
-# #     'CHEMPLASTS': 'NIFTY 500',
-# #     'JUNIPER': 'NIFTY 500',
-# #     'SURYAROSNI': 'NIFTY 500',
-# #     'DMCC': 'NIFTY 500',
-# #     'JWL': 'NIFTY 500',
-# #     'SURAJLTD': 'NIFTY 500',
-# #     'NORTHARC': 'NIFTY 500',
-# #     'NAHARPOLY': 'NIFTY 500',
-# #     'CANTABIL': 'NIFTY 500',
-# #     'CAPACITE': 'NIFTY 500',
-# #     'CLSEL': 'NIFTY 500',
-# #     'IXIGO': 'NIFTY 500',
-# #     'EPACK': 'NIFTY 500',
-# #     'VSTIND': 'NIFTY 500',
-# #     'PODDARMENT': 'NIFTY 500',
-# #     'REFEX': 'NIFTY 500',
-# #     'PNCINFRA': 'NIFTY 500',
-# #     'BAJAJCON': 'NIFTY 500',
-# #     'UTTAMSUGAR': 'NIFTY 500',
-# #     'GODAVARIB': 'NIFTY 500',
-# #     'HIKAL': 'NIFTY 500',
-# #     'PRINCEPIPE': 'NIFTY 500',
-# #     'GREENLAM': 'NIFTY 500',
-# #     'SUNFLAG': 'NIFTY 500',
-# #     'MMP': 'NIFTY 500',
-# #     'PPL': 'NIFTY 500',
-# #     'DELPHIFX': 'NIFTY 500',
-# #     'ASAHISONG': 'NIFTY 500',
-# #     'SAHYADRI': 'NIFTY 500',
-# #     'AEGISVOPAK': 'NIFTY 500',
-# #     'AKSHARCHEM': 'NIFTY 500',
-# #     'AWL': 'NIFTY 500',
-# #     'PLATIND': 'NIFTY 500',
-# #     'KARURVYSYA': 'NIFTY 500',
-# #     'HUBTOWN': 'NIFTY 500',
-# #     'ZENITHEXPO': 'NIFTY 500',
-# #     'NLCINDIA': 'NIFTY 500',
-# #     'PURVA': 'NIFTY 500',
-# #     'VIKRAMSOLR': 'NIFTY 500',
-# #     'INDIANCARD': 'NIFTY 500',
-# #     'INDOCO': 'NIFTY 500',
-# #     'INDOSTAR': 'NIFTY 500',
-# #     'DCI': 'NIFTY 500',
-# #     'DBCORP': 'NIFTY 500',
-# #     'SESHAPAPER': 'NIFTY 500',
-# #     'HERANBA': 'NIFTY 500',
-# #     'UNIVPHOTO': 'NIFTY 500',
-# #     'VINYLINDIA': 'NIFTY 500',
-# #     'GANESHCP': 'NIFTY 500',
-# #     'FABTECH': 'NIFTY 500',
-# #     'GPIL': 'NIFTY 500',
-# #     'SAPPHIRE': 'NIFTY 500',
-# #     'GREENPANEL': 'NIFTY 500',
-# #     'DHARMAJ': 'NIFTY 500',
-# #     'MOBIKWIK': 'NIFTY 500',
-# #     'WANBURY': 'NIFTY 500',
-# #     'PINELABS': 'NIFTY 500',
-# #     'ASPINWALL': 'NIFTY 500',
-# #     'VAIBHAVGBL': 'NIFTY 500',
-# #     'APOLLO': 'NIFTY 500',
-# #     'PRECWIRE': 'NIFTY 500',
-# #     'CEIGALL': 'NIFTY 500',
-# #     'JNKINDIA': 'NIFTY 500',
-# #     'RELIGARE': 'NIFTY 500',
-# #     'TIRUMALCHM': 'NIFTY 500',
-# #     'KAMATHOTEL': 'NIFTY 500',
-# #     'ECOSMOBLTY': 'NIFTY 500',
-# #     'EIFFL': 'NIFTY 500',
-# #     'BHAGCHEM': 'NIFTY 500',
-# #     'TARSONS': 'NIFTY 500',
-# #     'ACMESOLAR': 'NIFTY 500',
-# #     'RITES': 'NIFTY 500',
-# #     'NAZARA': 'NIFTY 500',
-# #     'SCI': 'NIFTY 500',
-# #     'MHLXMIRU': 'NIFTY 500',
-# #     'STANLEY': 'NIFTY 500',
-# #     'KANSAINER': 'NIFTY 500',
-# #     'ADVENTHTL': 'NIFTY 500',
-# #     'SIGNPOST': 'NIFTY 500',
-# #     'STARCEMENT': 'NIFTY 500',
-# #     'MAZDA': 'NIFTY 500',
-# #     'ALPHAGEO': 'NIFTY 500',
-# #     'KABRAEXTRU': 'NIFTY 500',
-# #     'DCAL': 'NIFTY 500',
-# #     'SREEL': 'NIFTY 500',
-# #     'PPAP': 'NIFTY 500',
-# #     'SWSOLAR': 'NIFTY 500',
-# #     'NIRAJISPAT': 'NIFTY 500',
-# #     'RUBYMILLS': 'NIFTY 500',
-# #     'DEEDEV': 'NIFTY 500',
-# #     'BLSE': 'NIFTY 500',
-# #     'EPL': 'NIFTY 500',
-# #     'SANDUMA': 'NIFTY 500',
-# #     'SULA': 'NIFTY 500',
-# #     'LOYALTEX': 'NIFTY 500',
-# #     'SAGCEM': 'NIFTY 500',
-# #     'HUHTAMAKI': 'NIFTY 500',
-# #     'DAMCAPITAL': 'NIFTY 500',
-# #     'STEELCAS': 'NIFTY 500',
-# #     'ADFFOODS': 'NIFTY 500',
-# #     'UNIDT': 'NIFTY 500',
-# #     'AFFORDABLE': 'NIFTY 500',
-# #     'SEQUENT': 'NIFTY 500',
-# #     'QUESS': 'NIFTY 500',
-# #     'IFGLEXPOR': 'NIFTY 500',
-# #     'PATELRMART': 'NIFTY 500',
-# #     'JAYKAY': 'NIFTY 500',
-# #     'MOSCHIP': 'NIFTY 500',
-# #     'KNAGRI': 'NIFTY 500',
-# #     'LAOPALA': 'NIFTY 500',
-# #     'BLAL': 'NIFTY 500',
-# #     'UTLSOLAR': 'NIFTY 500',
-# #     'JAYAGROGN': 'NIFTY 500',
-# #     'ARVEE': 'NIFTY 500',
-# #     'INOXGREEN': 'NIFTY 500',
-# #     'MARINE': 'NIFTY 500',
-# #     'GARUDA': 'NIFTY 500',
-# #     'JAGSNPHARM': 'NIFTY 500',
-# #     'KTKBANK': 'NIFTY 500',
-# #     'CHEMCON': 'NIFTY 500',
-# #     'AFSL': 'NIFTY 500',
-# #     'PENIND': 'NIFTY 500',
-# #     'PFOCUS': 'NIFTY 500',
-# #     'EIEL': 'NIFTY 500',
-# #     'RHL': 'NIFTY 500',
-# #     'PACEDIGITK': 'NIFTY 500',
-# #     'NAHARSPING': 'NIFTY 500',
-# #     'KANPRPLA': 'NIFTY 500',
-# #     'GLOBALVECT': 'NIFTY 500',
-# #     'NCLIND': 'NIFTY 500',
-# #     'BBTCL': 'NIFTY 500',
-# #     'MINDTECK': 'NIFTY 500',
-# #     'NITIRAJ': 'NIFTY 500',
-# #     'SHRINGARMS': 'NIFTY 500',
-# #     'DPWIRES': 'NIFTY 500',
-# #     'GOKULAGRO': 'NIFTY 500',
-# #     'KITEX': 'NIFTY 500',
-# #     'RESPONIND': 'NIFTY 500',
-# #     'INDIQUBE': 'NIFTY 500',
-# #     'SHANTIGOLD': 'NIFTY 500',
-# #     'MARKSANS': 'NIFTY 500',
-# #     'EMMVEE': 'NIFTY 500',
-# #     'ITCHOTELS': 'NIFTY 500',
-# #     'SHALBY': 'NIFTY 500',
-# #     'ENGINERSIN': 'NIFTY 500',
-# #     'RAJESHEXPO': 'NIFTY 500',
-# #     'MAXIND': 'NIFTY 500',
-# #     'INDOFARM': 'NIFTY 500',
-# #     '20MICRONS': 'NIFTY 500',
-# #     'SAKSOFT': 'NIFTY 500',
-# #     'VERANDA': 'NIFTY 500',
-# #     'NATCAPSUQ': 'NIFTY 500',
-# #     'SSWL': 'NIFTY 500',
-# #     'GPPL': 'NIFTY 500',
-# #     'TIMETECHNO': 'NIFTY 500',
-# #     'PRABHA': 'NIFTY 500',
-# #     'CORDSCABLE': 'NIFTY 500',
-# #     'ORBTEXP': 'NIFTY 500',
-# #     'LIKHITHA': 'NIFTY 500',
-# #     'CGCL': 'NIFTY 500',
-# #     'CASTROLIND': 'NIFTY 500',
-# #     'AARON': 'NIFTY 500',
-# #     'MVGJL': 'NIFTY 500',
-# #     'UFBL': 'NIFTY 500',
-# #     'GREAVESCOT': 'NIFTY 500',
-# #     'EUROBOND': 'NIFTY 500',
-# #     'SHREYANIND': 'NIFTY 500',
-# #     'KCP': 'NIFTY 500',
-# #     'LFIC': 'NIFTY 500',
-# #     'TRANSWORLD': 'NIFTY 500',
-# #     'ORIENTELEC': 'NIFTY 500',
-# #     'SAMHI': 'NIFTY 500',
-# #     'PROSTARM': 'NIFTY 500',
-# #     'BHARATWIRE': 'NIFTY 500',
-# #     'BHARATSE': 'NIFTY 500',
-# #     'BALMLAWRIE': 'NIFTY 500',
-# #     'KROSS': 'NIFTY 500',
-# #     'IKIO': 'NIFTY 500',
-# #     'BHAGERIA': 'NIFTY 500',
-# #     'YATRA': 'NIFTY 500',
-# #     'AEROFLEX': 'NIFTY 500',
-# #     'SHIVATEX': 'NIFTY 500',
-# #     'WALCHANNAG': 'NIFTY 500',
-# #     'HEIDELBERG': 'NIFTY 500',
-# #     'MUTHOOTMF': 'NIFTY 500',
-# #     'AURUM': 'NIFTY 500',
-# #     'AMNPLST': 'NIFTY 500',
-# #     'MANCREDIT': 'NIFTY 500',
-# #     'LORDSCHLO': 'NIFTY 500',
-# #     'SPMLINFRA': 'NIFTY 500',
-# #     'LOKESHMACH': 'NIFTY 500',
-# #     'SHAREINDIA': 'NIFTY 500',
-# #     'UDS': 'NIFTY 500',
-# #     'GSFC': 'NIFTY 500',
-# #     'NIACL': 'NIFTY 500',
-# #     'IITL': 'NIFTY 500',
-# #     'WEL': 'NIFTY 500',
-# #     'DCBBANK': 'NIFTY 500',
-# #     'KHADIM': 'NIFTY 500',
-# #     'UGROCAP': 'NIFTY 500',
-# #     'LXCHEM': 'NIFTY 500',
-# #     'SUVEN': 'NIFTY 500',
-# #     'ELIN': 'NIFTY 500',
-# #     'MARKOLINES': 'NIFTY 500',
-# #     'IPL': 'NIFTY 500',
-# #     'HITECHCORP': 'NIFTY 500',
-# #     'PYRAMID': 'NIFTY 500',
-# #     'SHK': 'NIFTY 500',
-# #     'HEXATRADEX': 'NIFTY 500',
-# #     'BAJEL': 'NIFTY 500',
-# #     'CONSOFINVT': 'NIFTY 500',
-# #     'FINPIPE': 'NIFTY 500',
-# #     'ORIENTCEM': 'NIFTY 500',
-# #     'AVG': 'NIFTY 500',
-# #     'RELTD': 'NIFTY 500',
-# #     'ASHOKA': 'NIFTY 500',
-# #     'VINCOFE': 'NIFTY 500',
-# #     'MEESHO': 'NIFTY 500',
-# #     'URAVIDEF': 'NIFTY 500',
-# #     'CHEMBOND': 'NIFTY 500',
-# #     'TBZ': 'NIFTY 500',
-# #     'DCMSRIND': 'NIFTY 500',
-# #     'CAMLINFINE': 'NIFTY 500',
-# #     'PLASTIBLEN': 'NIFTY 500',
-# #     'LEMONTREE': 'NIFTY 500',
-# #     'RUPA': 'NIFTY 500',
-# #     'BSL': 'NIFTY 500',
-# #     'DCXINDIA': 'NIFTY 500',
-# #     'DTIL': 'NIFTY 500',
-# #     'GICHSGFIN': 'NIFTY 500',
-# #     'HARRMALAYA': 'NIFTY 500',
-# #     'AYMSYNTEX': 'NIFTY 500',
-# #     'JINDALSAW': 'NIFTY 500',
-# #     'STARPAPER': 'NIFTY 500',
-# #     'SCHAND': 'NIFTY 500',
-# #     'CHEMBONDCH': 'NIFTY 500',
-# #     'MOLDTECH': 'NIFTY 500',
-# #     'SYSTMTXC': 'NIFTY 500',
-# #     'TAINWALCHM': 'NIFTY 500',
-# #     'BELRISE': 'NIFTY 500',
-# #     'RATNAVEER': 'NIFTY 500',
-# #     'NOCIL': 'NIFTY 500',
-# #     'FUSION': 'NIFTY 500',
-# #     'HISARMETAL': 'NIFTY 500',
-# #     'HERCULES': 'NIFTY 500',
-# #     'GKENERGY': 'NIFTY 500',
-# #     'ADSL': 'NIFTY 500',
-# #     'SCODATUBES': 'NIFTY 500',
-# #     'IRCON': 'NIFTY 500',
-# #     'SGLTL': 'NIFTY 500',
-# #     'LOTUSDEV': 'NIFTY 500',
-# #     'RAMAPHO': 'NIFTY 500',
-# #     'MAANALU': 'NIFTY 500',
-# #     'PARADEEP': 'NIFTY 500',
-# #     'PTC': 'NIFTY 500',
-# #     'PRECAM': 'NIFTY 500',
-# #     'WIPL': 'NIFTY 500',
-# #     'RSWM': 'NIFTY 500',
-# #     'NATHBIOGEN': 'NIFTY 500',
-# #     'AVANTEL': 'NIFTY 500',
-# #     'HINDOILEXP': 'NIFTY 500',
-# #     'KALAMANDIR': 'NIFTY 500',
-# #     'VGL': 'NIFTY 500',
-# #     'SAMMAANCAP': 'NIFTY 500',
-# #     'MRPL': 'NIFTY 500',
-# #     'RACE': 'NIFTY 500',
-# #     'BIRLAMONEY': 'NIFTY 500',
-# #     'SUKHJITS': 'NIFTY 500',
-# #     'GIPCL': 'NIFTY 500',
-# #     'IVP': 'NIFTY 500',
-# #     'SUPERHOUSE': 'NIFTY 500',
-# #     'AEQUS': 'NIFTY 500',
-# #     'JMFINANCIL': 'NIFTY 500',
-# #     'TARC': 'NIFTY 500',
-# #     'KNRCON': 'NIFTY 500',
-# #     'GROWW': 'NIFTY 500',
-# #     'JOCIL': 'NIFTY 500',
-# #     'ADANIPOWER': 'NIFTY 500',
-# #     'BLISSGVS': 'NIFTY 500',
-# #     'SATIN': 'NIFTY 500',
-# #     'JTEKTINDIA': 'NIFTY 500',
-# #     'ARKADE': 'NIFTY 500',
-# #     'TNPL': 'NIFTY 500',
-# #     'FEDFINA': 'NIFTY 500',
-# #     'GANGESSECU': 'NIFTY 500',
-# #     'KRONOX': 'NIFTY 500',
-# #     'WORTHPERI': 'NIFTY 500',
-# #     'GEMAROMA': 'NIFTY 500',
-# #     'NAVNETEDUL': 'NIFTY 500',
-# #     'RBZJEWEL': 'NIFTY 500',
-# #     'DIACABS': 'NIFTY 500',
-# #     'MODISONLTD': 'NIFTY 500',
-# #     'DIGITIDE': 'NIFTY 500',
-# #     'GPTHEALTH': 'NIFTY 500',
-# #     'THOMASCOOK': 'NIFTY 500',
-# #     'MANBA': 'NIFTY 500',
-# #     'RCF': 'NIFTY 500',
-# #     'RELCHEMQ': 'NIFTY 500',
-# #     'CROWN': 'NIFTY 500',
-# #     'WELSPUNLIV': 'NIFTY 500',
-# #     'UNIENTER': 'NIFTY 500',
-# #     'SURYODAY': 'NIFTY 500',
-# #     'MUKANDLTD': 'NIFTY 500',
-# #     'SPARC': 'NIFTY 500',
-# #     'GULPOLY': 'NIFTY 500',
-# #     'MONEYBOXX': 'NIFTY 500',
-# #     'PWL': 'NIFTY 500',
-# #     'MANAKCOAT': 'NIFTY 500',
-# #     'TVTODAY': 'NIFTY 500',
-# #     'VMM': 'NIFTY 500',
-# #     'PRAKASH': 'NIFTY 500',
-# #     'HEMIPROP': 'NIFTY 500',
-# #     'DEVYANI': 'NIFTY 500',
-# #     'PIGL': 'NIFTY 500',
-# #     'TOLINS': 'NIFTY 500',
-# #     'AHLEAST': 'NIFTY 500',
-# #     'KAKATCEM': 'NIFTY 500',
-# #     'BIRLACABLE': 'NIFTY 500',
-# #     'ROLEXRINGS': 'NIFTY 500',
-# #     'SMARTLINK': 'NIFTY 500',
-# #     'SOMICONVEY': 'NIFTY 500',
-# #     'HPIL': 'NIFTY 500',
-# #     'PARKHOTELS': 'NIFTY 500',
-# #     'LAXMIINDIA': 'NIFTY 500',
-# #     'BOMDYEING': 'NIFTY 500',
-# #     'MANINFRA': 'NIFTY 500',
-# #     'DHAMPURSUG': 'NIFTY 500',
-# #     'KOPRAN': 'NIFTY 500',
-# #     'PRSMJOHNSN': 'NIFTY 500',
-# #     'RGL': 'NIFTY 500',
-# #     'BANARBEADS': 'NIFTY 500',
-# #     'JAICORPLTD': 'NIFTY 500',
-# #     'AGRITECH': 'NIFTY 500',
-# #     'LOTUSEYE': 'NIFTY 500',
-# #     'DCMNVL': 'NIFTY 500',
-# #     'URBANCO': 'NIFTY 500',
-# #     'HECPROJECT': 'NIFTY 500',
-# #     'ABLBL': 'NIFTY 500',
-# #     'INDOUS': 'NIFTY 500',
-# #     'VSTL': 'NIFTY 500',
-# #     'MAHEPC': 'NIFTY 500',
-# #     'KOTHARIPET': 'NIFTY 500',
-# #     'TEXRAIL': 'NIFTY 500',
-# #     'BOROSCI': 'NIFTY 500',
-# #     'ARISINFRA': 'NIFTY 500',
-# #     'JAMNAAUTO': 'NIFTY 500',
-# #     'GANDHAR': 'NIFTY 500',
-# #     'LAMBODHARA': 'NIFTY 500',
-# #     'MUNJALSHOW': 'NIFTY 500',
-# #     'REDTAPE': 'NIFTY 500',
-# #     'PVSL': 'NIFTY 500',
-# #     'VRAJ': 'NIFTY 500',
-# #     'APCL': 'NIFTY 500',
-# #     'STCINDIA': 'NIFTY 500',
-# #     'AARVI': 'NIFTY 500',
-# #     'CANHLIFE': 'NIFTY 500',
-# #     'RNBDENIMS': 'NIFTY 500',
-# #     'ADVANCE': 'NIFTY 500',
-# #     'WCIL': 'NIFTY 500',
-# #     'JSWCEMENT': 'NIFTY 500',
-# #     'REPL': 'NIFTY 500',
-# #     'RUCHIRA': 'NIFTY 500',
-# #     'MASTERTR': 'NIFTY 500',
-# #     'DBREALTY': 'NIFTY 500',
-# #     'UNIECOM': 'NIFTY 500',
-# #     'DBEIL': 'NIFTY 500',
-# #     'EKC': 'NIFTY 500',
-# #     'INDOAMIN': 'NIFTY 500',
-# #     'RICOAUTO': 'NIFTY 500',
-# #     'REMSONSIND': 'NIFTY 500',
-# #     'GAEL': 'NIFTY 500',
-# #     'SECMARK': 'NIFTY 500',
-# #     'HIMATSEIDE': 'NIFTY 500',
-# #     'SPECIALITY': 'NIFTY 500',
-# #     'THEINVEST': 'NIFTY 500',
-# #     'UCAL': 'NIFTY 500',
-# #     'GMRP&UI': 'NIFTY 500',
-# #     'ENIL': 'NIFTY 500',
-# #     'AVROIND': 'NIFTY 500',
-# #     'CPCAP': 'NIFTY 500',
-# #     'BANSWRAS': 'NIFTY 500',
-# #     'RKSWAMY': 'NIFTY 500',
-# #     'SHANKARA': 'NIFTY 500',
-# #     'TOKYOPLAST': 'NIFTY 500',
-# #     'LINC': 'NIFTY 500',
-# #     'DREAMFOLKS': 'NIFTY 500',
-# #     'EXICOM': 'NIFTY 500',
-# #     'MUFIN': 'NIFTY 500',
-# #     'EMIL': 'NIFTY 500',
-# #     'TVSSCS': 'NIFTY 500',
-# #     'NELCAST': 'NIFTY 500',
-# #     'AUSOMENT': 'NIFTY 500',
-# #     'NAHARINDUS': 'NIFTY 500',
-# #     'SHEMAROO': 'NIFTY 500',
-# #     'PALASHSECU': 'NIFTY 500',
-# #     'BALAJITELE': 'NIFTY 500',
-# #     'JKIPL': 'NIFTY 500',
-# #     'VETO': 'NIFTY 500',
-# #     'SDBL': 'NIFTY 500',
-# #     'ESTER': 'NIFTY 500',
-# #     'RAIN': 'NIFTY 500',
-# #     'GILLANDERS': 'NIFTY 500',
-# #     'ORIENTHOT': 'NIFTY 500',
-# #     'MENONBE': 'NIFTY 500',
-# #     'TEXINFRA': 'NIFTY 500',
-# #     'SINTERCOM': 'NIFTY 500',
-# #     'AMANTA': 'NIFTY 500',
-# #     'SBFC': 'NIFTY 500',
-# #     'PAKKA': 'NIFTY 500',
-# #     'TNPETRO': 'NIFTY 500',
-# #     'TOUCHWOOD': 'NIFTY 500',
-# #     'AIROLAM': 'NIFTY 500',
-# #     'EDELWEISS': 'NIFTY 500',
-# #     'GPTINFRA': 'NIFTY 500',
-# #     'THEMISMED': 'NIFTY 500',
-# #     'MODIRUBBER': 'NIFTY 500',
-# #     'OMINFRAL': 'NIFTY 500',
-# #     'J&KBANK': 'NIFTY 500',
-# #     'RPPINFRA': 'NIFTY 500',
-# #     'ALEMBICLTD': 'NIFTY 500',
-# #     'KECL': 'NIFTY 500',
-# #     'BEDMUTHA': 'NIFTY 500',
-# #     'STLTECH': 'NIFTY 500',
-# #     'GTPL': 'NIFTY 500',
-# #     'WEIZMANIND': 'NIFTY 500',
-# #     'FINKURVE': 'NIFTY 500',
-# #     'IDBI': 'NIFTY 500',
-# #     'ISFT': 'NIFTY 500',
-# #     'OMAXAUTO': 'NIFTY 500',
-# #     'DONEAR': 'NIFTY 500',
-# #     'PDMJEPAPER': 'NIFTY 500',
-# #     'EXCELSOFT': 'NIFTY 500',
-# #     'BSHSL': 'NIFTY 500',
-# #     'KHAITANLTD': 'NIFTY 500',
-# #     'BROOKS': 'NIFTY 500',
-# #     'MUFTI': 'NIFTY 500',
-# #     'INDSWFTLAB': 'NIFTY 500',
-# #     'SMLT': 'NIFTY 500',
-# #     'APTECHT': 'NIFTY 500',
-# #     'STEELCITY': 'NIFTY 500',
-# #     'EMMBI': 'NIFTY 500',
-# #     'BAJAJHFL': 'NIFTY 500',
-# #     'MAHAPEXLTD': 'NIFTY 500',
-# #     'CUBEXTUB': 'NIFTY 500',
-# #     'SAMBHV': 'NIFTY 500',
-# #     'OCCLLTD': 'NIFTY 500',
-# #     'NAVKARCORP': 'NIFTY 500',
-# #     'ARIHANTCAP': 'NIFTY 500',
-# #     'INTLCONV': 'NIFTY 500',
-# #     'ZEEL': 'NIFTY 500',
-# #     'VIKRAN': 'NIFTY 500',
-# #     'SANSTAR': 'NIFTY 500',
-# #     'ATLASCYCLE': 'NIFTY 500',
-# #     'ARCHIDPLY': 'NIFTY 500',
-# #     'DCM': 'NIFTY 500',
-# #     'PAR': 'NIFTY 500',
-# #     'HITECH': 'NIFTY 500',
-# #     'NTPCGREEN': 'NIFTY 500',
-# #     'KUANTUM': 'NIFTY 500',
-# #     'NITCO': 'NIFTY 500',
-# #     'KOKUYOCMLN': 'NIFTY 500',
-# #     'WEBELSOLAR': 'NIFTY 500',
-# #     'NDLVENTURE': 'NIFTY 500',
-# #     'SPORTKING': 'NIFTY 500',
-# #     'BEPL': 'NIFTY 500',
-# #     'EMAMIPAP': 'NIFTY 500',
-# #     'SHREDIGCEM': 'NIFTY 500',
-# #     'OMFREIGHT': 'NIFTY 500',
-# #     'JAYBARMARU': 'NIFTY 500',
-# #     'INSPIRISYS': 'NIFTY 500',
-# #     'NIITLTD': 'NIFTY 500',
-# #     'JAYSREETEA': 'NIFTY 500',
-# #     'KRITI': 'NIFTY 500',
-# #     'ZODIACLOTH': 'NIFTY 500',
-# #     'AERONEU': 'NIFTY 500',
-# #     'SAURASHCEM': 'NIFTY 500',
-# #     'NFL': 'NIFTY 500',
-# #     'DOLATALGO': 'NIFTY 500',
-# #     'EMAMIREAL': 'NIFTY 500',
-# #     'SARLAPOLY': 'NIFTY 500',
-# #     'CINELINE': 'NIFTY 500',
-# #     'SHRIRAMPPS': 'NIFTY 500',
-# #     'SMCGLOBAL': 'NIFTY 500',
-# #     'IGCL': 'NIFTY 500',
-# #     'MAWANASUG': 'NIFTY 500',
-# #     'WSI': 'NIFTY 500',
-# #     'SINCLAIR': 'NIFTY 500',
-# #     'IOLCP': 'NIFTY 500',
-# #     'SERVOTECH': 'NIFTY 500',
-# #     'KHAICHEM': 'NIFTY 500',
-# #     'LOVABLE': 'NIFTY 500',
-# #     'CLEDUCATE': 'NIFTY 500',
-# #     'XCHANGING': 'NIFTY 500',
-# #     'NDTV': 'NIFTY 500',
-# #     'ALKALI': 'NIFTY 500',
-# #     'FOCUS': 'NIFTY 500',
-# #     'ATAM': 'NIFTY 500',
-# #     'SUPREME': 'NIFTY 500',
-# #     'SSDL': 'NIFTY 500',
-# #     'SPIC': 'NIFTY 500',
-# #     'ALPA': 'NIFTY 500',
-# #     'TOTAL': 'NIFTY 500',
-# #     'AEROENTER': 'NIFTY 500',
-# #     'DBOL': 'NIFTY 500',
-# #     'RMDRIP': 'NIFTY 500',
-# #     'PNBGILTS': 'NIFTY 500',
-# #     'ANUHPHR': 'NIFTY 500',
-# #     'MUNJALAU': 'NIFTY 500',
-# #     'GANESHBE': 'NIFTY 500',
-# #     'ADL': 'NIFTY 500',
-# #     'JMA': 'NIFTY 500',
-# #     'LYKALABS': 'NIFTY 500',
-# #     'UFO': 'NIFTY 500',
-# #     'ORIENTLTD': 'NIFTY 500',
-# #     'ANDHRSUGAR': 'NIFTY 500',
-# #     'KANORICHEM': 'NIFTY 500',
-# #     'TARACHAND': 'NIFTY 500',
-# #     'NIVABUPA': 'NIFTY 500',
-# #     'VERTOZ': 'NIFTY 500',
-# #     'RUBFILA': 'NIFTY 500',
-# #     'AUTOIND': 'NIFTY 500',
-# #     'RADHIKAJWE': 'NIFTY 500',
-# #     'BALPHARMA': 'NIFTY 500',
-# #     'FOODSIN': 'NIFTY 500',
-# #     'ACL': 'NIFTY 500',
-# #     'ZIMLAB': 'NIFTY 500',
-# #     'BRIGHOTEL': 'NIFTY 500',
-# #     'MADRASFERT': 'NIFTY 500',
-# #     'VPRPL': 'NIFTY 500',
-# #     'JAYNECOIND': 'NIFTY 500',
-# #     'KOTHARIPRO': 'NIFTY 500',
-# #     'EMBDL': 'NIFTY 500',
-# #     'GHCLTEXTIL': 'NIFTY 500',
-# #     'REGAAL': 'NIFTY 500',
-# #     'SILGO': 'NIFTY 500',
-# #     'DELTAMAGNT': 'NIFTY 500',
-# #     'ELECTCAST': 'NIFTY 500',
-# #     'DELTACORP': 'NIFTY 500',
-# #     'JAGRAN': 'NIFTY 500',
-# #     'GEOJITFSL': 'NIFTY 500',
-# #     'TRIGYN': 'NIFTY 500',
-# #     'SUMIT': 'NIFTY 500',
-# #     'SHAHALLOYS': 'NIFTY 500',
-# #     'MITCON': 'NIFTY 500',
-# #     'KREBSBIO': 'NIFTY 500',
-# #     'BLUSPRING': 'NIFTY 500',
-# #     'LAGNAM': 'NIFTY 500',
-# #     'RBA': 'NIFTY 500',
-# #     'ANDHRAPAP': 'NIFTY 500',
-# #     'SATIA': 'NIFTY 500',
-# #     'VALIANTLAB': 'NIFTY 500',
-# #     'AVTNPL': 'NIFTY 500',
-# #     'TPLPLASTEH': 'NIFTY 500',
-# #     'TFCILTD': 'NIFTY 500',
-# #     'VISAKAIND': 'NIFTY 500',
-# #     'BIGBLOC': 'NIFTY 500',
-# #     'HMVL': 'NIFTY 500',
-# #     'UNIVASTU': 'NIFTY 500',
-# #     'ISHANCH': 'NIFTY 500',
-# #     'BANKA': 'NIFTY 500',
-# #     'NKIND': 'NIFTY 500',
-# #     'OILCOUNTUB': 'NIFTY 500',
-# #     'HGM': 'NIFTY 500',
-# #     'OMAXE': 'NIFTY 500',
-# #     'KRITINUT': 'NIFTY 500',
-# #     'MOL': 'NIFTY 500',
-# #     'ASIANTILES': 'NIFTY 500',
-# #     'RAJOOENG': 'NIFTY 500',
-# #     'SANGHIIND': 'NIFTY 500',
-# #     'MANAKSIA': 'NIFTY 500',
-# #     'GLOBECIVIL': 'NIFTY 500',
-# #     'MUKTAARTS': 'NIFTY 500',
-# #     'ROTO': 'NIFTY 500',
-# #     'SHIVAMILLS': 'NIFTY 500',
-# #     'HILINFRA': 'NIFTY 500',
-# #     'MANALIPETC': 'NIFTY 500',
-# #     'JTLIND': 'NIFTY 500',
-# #     'JAIBALAJI': 'NIFTY 500',
-# #     'DCW': 'NIFTY 500',
-# #     'NRL': 'NIFTY 500',
-# #     'GATEWAY': 'NIFTY 500',
-# #     'GLOTTIS': 'NIFTY 500',
-# #     'BMWVENTLTD': 'NIFTY 500',
-# #     'SHALPAINTS': 'NIFTY 500',
-# #     'SRD': 'NIFTY 500',
-# #     'DJML': 'NIFTY 500',
-# #     'OSWALAGRO': 'NIFTY 500',
-# #     'GFLLIMITED': 'NIFTY 500',
-# #     'EQUITASBNK': 'NIFTY 500',
-# #     'VASWANI': 'NIFTY 500',
-# #     'SURYALAXMI': 'NIFTY 500',
-# #     'ADVANIHOTR': 'NIFTY 500',
-# #     'LLOYDSENT': 'NIFTY 500',
-# #     'PRITI': 'NIFTY 500',
-# #     'RSSOFTWARE': 'NIFTY 500',
-# #     'MANAKSTEEL': 'NIFTY 500',
-# #     'BPL': 'NIFTY 500',
-# #     'MAHABANK': 'NIFTY 500',
-# #     'ONMOBILE': 'NIFTY 500',
-# #     'SIGIND': 'NIFTY 500',
-# #     'OBCL': 'NIFTY 500',
-# #     'MMTC': 'NIFTY 500',
-# #     'ANIKINDS': 'NIFTY 500',
-# #     'RKEC': 'NIFTY 500',
-# #     'ROSSELLIND': 'NIFTY 500',
-# #     'VMSTMT': 'NIFTY 500',
-# #     'UJJIVANSFB': 'NIFTY 500',
-# #     'FILATEX': 'NIFTY 500',
-# #     'ELGIRUBCO': 'NIFTY 500',
-# #     'RADIANTCMS': 'NIFTY 500',
-# #     'BODALCHEM': 'NIFTY 500',
-# #     'PASUPTAC': 'NIFTY 500',
-# #     'BYKE': 'NIFTY 500',
-# #     'GOLDTECH': 'NIFTY 500',
-# #     'LLOYDSENGG': 'NIFTY 500',
-# #     'ONEPOINT': 'NIFTY 500',
-# #     'KARMAENG': 'NIFTY 500',
-# #     'TARMAT': 'NIFTY 500',
-# #     'VIDYAWIRES': 'NIFTY 500',
-# #     'MEDICO': 'NIFTY 500',
-# #     'BLKASHYAP': 'NIFTY 500',
-# #     'AMJLAND': 'NIFTY 500',
-# #     'AHLADA': 'NIFTY 500',
-# #     'AMDIND': 'NIFTY 500',
-# #     'ROML': 'NIFTY 500',
-# #     'TEXMOPIPES': 'NIFTY 500'
-# # }
-
-# # # --- CONSOLIDATED RAM STATE ---
-# # RAM_STATE = {
-# #     "main_loop": None,
-# #     "kite": None,
-# #     "kws": None,
-# #     "api_key": "",
-# #     "api_secret": "",
-# #     "access_token": "",
-# #     "stocks": {}, 
-# #     "trades": {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]},
-# #     "config": {
-# #         side: {
-# #             "volume_criteria": [{"min_vol_price_cr": 0, "sma_multiplier": 1.0, "min_sma_avg": 0} for _ in range(10)],
-# #             "total_trades": 10, 
-# #             "risk_trade_1": 20, 
-# #             "risk_reward": "1:2", 
-# #             "trailing_sl": "1:1.5"
-# #         } for side in ["bull", "bear", "mom_bull", "mom_bear"]
-# #     },
-# #     "engine_live": {side: False for side in ["bull", "bear", "mom_bull", "mom_bear"]},
-# #     "pnl": {"total": 0.0, "bull": 0.0, "bear": 0.0, "mom_bull": 0.0, "mom_bear": 0.0},
-# #     "data_connected": {"breakout": False, "momentum": False},
-# #     "manual_exits": set()
-# # }
-
-# # # --- ASYNC BRIDGE (THREAD TO UVLOOP) ---
-# # def on_ticks(ws, ticks):
-# #     """
-# #     Receives ticks from Kite's background thread and forwards them to Engines.
-# #     Includes Heartbeat logging to verify data flow.
-# #     """
-# #     global TICK_STATS
-# #     if not RAM_STATE["main_loop"]:
-# #         return
-
-# #     # Increment global counter
-# #     TICK_STATS["received"] += len(ticks)
-    
-# #     # Heartbeat Log: Every 500 ticks
-# #     if TICK_STATS["received"] >= 500:
-# #         logger.info(f"💓 HEARTBEAT: Processed {TICK_STATS['received']} total ticks since last reset. Engines are active.")
-# #         TICK_STATS["received"] = 0
-
-# #     for tick in ticks:
-# #         token = tick['instrument_token']
-# #         if token in RAM_STATE["stocks"]:
-# #             ltp = tick['last_price']
-# #             vol = tick.get('volume_traded', 0)
-            
-# #             # Update LTP in RAM immediately
-# #             RAM_STATE["stocks"][token]['ltp'] = ltp
-            
-# #             # Forward to Engines inside the main Async Loop
-# #             try:
-# #                 asyncio.run_coroutine_threadsafe(
-# #                     BreakoutEngine.run(token, ltp, vol, RAM_STATE),
-# #                     RAM_STATE["main_loop"]
-# #                 )
-# #                 asyncio.run_coroutine_threadsafe(
-# #                     MomentumEngine.run(token, ltp, vol, RAM_STATE),
-# #                     RAM_STATE["main_loop"]
-# #                 )
-# #             except Exception:
-# #                 pass
-
-# # def on_connect(ws, response):
-# #     logger.info("✅ TICKER: Handshake successful. Subscribing to tokens...")
-# #     tokens = list(RAM_STATE["stocks"].keys())
-# #     if tokens:
-# #         ws.subscribe(tokens)
-# #         ws.set_mode(ws.MODE_FULL, tokens)
-# #         logger.info(f"✅ TICKER: Subscribed to {len(tokens)} stocks.")
-# #     RAM_STATE["data_connected"]["breakout"] = True
-# #     RAM_STATE["data_connected"]["momentum"] = True
-
-# # def on_error(ws, code, reason):
-# #     logger.error(f"❌ TICKER ERROR: {code} - {reason}")
-
-# # def on_close(ws, code, reason):
-# #     logger.warning(f"⚠️ TICKER: Connection closed ({code}: {reason})")
-# #     RAM_STATE["data_connected"]["breakout"] = False
-# #     RAM_STATE["data_connected"]["momentum"] = False
-
-# # # --- SYSTEM LIFECYCLE: STARTUP ---
-
-# # @app.on_event("startup")
-# # async def startup_event():
-# #     logger.info("--- 🚀 NEXUS ASYNC ENGINE BOOTING ---")
-# #     RAM_STATE["main_loop"] = asyncio.get_running_loop()
-    
-# #     # 1. Restore API Credentials from Redis or Heroku Env
-# #     key_redis, sec_redis = await TradeControl.get_config()
-# #     api_key = key_redis or os.getenv("KITE_API_KEY", "")
-# #     api_secret = sec_redis or os.getenv("KITE_API_SECRET", "")
-    
-# #     if api_key and api_secret:
-# #         RAM_STATE["api_key"] = str(api_key)
-# #         RAM_STATE["api_secret"] = str(api_secret)
-# #         logger.info(f"🔑 REDIS: API Credentials Restored ({RAM_STATE['api_key'][:4]}***)")
-
-# #     # 2. Restore Session
-# #     token = await TradeControl.get_access_token()
-# #     if token and RAM_STATE["api_key"]:
-# #         try:
-# #             RAM_STATE["access_token"] = str(token)
-# #             RAM_STATE["kite"] = KiteConnect(api_key=RAM_STATE["api_key"])
-# #             RAM_STATE["kite"].set_access_token(RAM_STATE["access_token"])
-            
-# #             # 3. Map Instruments (Run blocking call in executor)
-# #             logger.info("📡 KITE: Mapping NSE Instruments...")
-# #             instruments = await asyncio.to_thread(RAM_STATE["kite"].instruments, "NSE")
-# #             for instr in instruments:
-# #                 symbol = instr['tradingsymbol']
-# #                 if symbol in STOCK_INDEX_MAPPING:
-# #                     t_id = instr['instrument_token']
-# #                     RAM_STATE["stocks"][t_id] = {
-# #                         'symbol': symbol, 'ltp': 0, 'status': 'WAITING', 'trades': 0,
-# #                         'hi': 0, 'lo': 0, 'pdh': 0, 'pdl': 0, 'sma': 0, 'candle': None, 'last_vol': 0
-# #                     }
-            
-# #             # 4. Fast-Boot: Hydrate Stock SMA/PDH from Redis Cache
-# #             cached_data = await TradeControl.get_all_market_data()
-# #             if cached_data:
-# #                 logger.info(f"⚡ CACHE: Hydrating {len(cached_data)} stocks from market cache.")
-# #                 for t_id_str, data in cached_data.items():
-# #                     t_id = int(t_id_str)
-# #                     if t_id in RAM_STATE["stocks"]:
-# #                         RAM_STATE["stocks"][t_id].update(data)
-            
-# #             # 5. Start Ticker
-# #             RAM_STATE["kws"] = KiteTicker(RAM_STATE["api_key"], RAM_STATE["access_token"])
-# #             RAM_STATE["kws"].on_ticks = on_ticks
-# #             RAM_STATE["kws"].on_connect = on_connect
-# #             RAM_STATE["kws"].on_error = on_error
-# #             RAM_STATE["kws"].on_close = on_close
-# #             RAM_STATE["kws"].connect(threaded=True)
-# #             logger.info("🛰️ SYSTEM: Ticker initialized in background thread (Signal-Safe).")
-
-# #         except Exception as e:
-# #             logger.error(f"❌ STARTUP ERROR: {e}")
-
-# # # --- WEB & API ENDPOINTS ---
-
-# # @app.get("/", response_class=HTMLResponse)
-# # async def get_dashboard():
-# #     try:
-# #         with open("index.html", "r") as f: return f.read()
-# #     except: return "Dashboard index.html not found."
-
-# # @app.get("/api/stats")
-# # async def get_stats():
-# #     """Provides real-time stats for the Dashboard UI."""
-# #     total_pnl = 0.0
-# #     engine_stats = {}
-# #     for side in ["bull", "bear", "mom_bull", "mom_bear"]:
-# #         side_pnl = sum(t.get('pnl', 0) for t in RAM_STATE["trades"][side])
-# #         engine_stats[side] = side_pnl
-# #         total_pnl += side_pnl
-    
-# #     RAM_STATE["pnl"]["total"] = total_pnl
-# #     return {
-# #         "pnl": {**RAM_STATE["pnl"], **engine_stats},
-# #         "data_connected": RAM_STATE["data_connected"],
-# #         "engine_status": {k: ("1" if v else "0") for k, v in RAM_STATE["engine_live"].items()}
-# #     }
-
-# # @app.get("/api/orders")
-# # async def get_orders(): 
-# #     return RAM_STATE["trades"]
-
-# # @app.get("/api/scanner")
-# # async def get_scanner():
-# #     signals = {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]}
-# #     for t_id, s in RAM_STATE["stocks"].items():
-# #         if s.get('status') in ['TRIGGER_WATCH', 'MOM_TRIGGER_WATCH']:
-# #             side = s.get('side_latch', '').lower()
-# #             if side in signals:
-# #                 signals[side].append({"symbol": s['symbol'], "price": s.get('trigger_px', 0)})
-# #     return signals
-
-# # @app.post("/api/control")
-# # async def control_center(data: dict):
-# #     action = data.get("action")
-# #     if action == "save_api":
-# #         key, secret = data.get("api_key"), data.get("api_secret")
-# #         RAM_STATE["api_key"], RAM_STATE["api_secret"] = str(key), str(secret)
-# #         await TradeControl.save_config(key, secret)
-# #         logger.info("💾 CONTROL: API credentials persisted.")
-# #         return {"status": "ok"}
-# #     elif action == "toggle_engine":
-# #         RAM_STATE["engine_live"][data['side']] = data['enabled']
-# #         logger.info(f"⚙️ CONTROL: Engine {data['side']} set to {data['enabled']}")
-# #         return {"status": "ok"}
-# #     elif action == "manual_exit":
-# #         RAM_STATE["manual_exits"].add(data['symbol'])
-# #         return {"status": "ok"}
-# #     return {"status": "error"}
-
-# # @app.get("/api/settings/engine/{side}")
-# # async def get_engine_settings(side: str):
-# #     return RAM_STATE["config"].get(side, {})
-
-# # @app.post("/api/settings/engine/{side}")
-# # async def save_engine_settings(side: str, data: dict):
-# #     if side in RAM_STATE["config"]:
-# #         RAM_STATE["config"][side].update(data)
-# #         logger.info(f"📝 SETTINGS: Volume matrix updated for {side}.")
-# #     return {"status": "success"}
-
-# # # --- AUTH FLOW ---
-
-# # @app.get("/api/kite/login")
-# # async def kite_login_redirect():
-# #     api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY")
-# #     if not api_key: return {"status": "error", "message": "Save API Key first."}
-# #     return RedirectResponse(url=KiteConnect(api_key=api_key).login_url())
-
-# # @app.get("/login")
-# # async def kite_callback(request_token: str = None):
-# #     if not request_token:
-# #         return RedirectResponse(url="/")
-# #     try:
-# #         api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY")
-# #         api_secret = RAM_STATE["api_secret"] or os.getenv("KITE_API_SECRET")
-# #         if not api_key or not api_secret:
-# #             k, s = await TradeControl.get_config()
-# #             api_key, api_secret = api_key or k, api_secret or s
-
-# #         kite = KiteConnect(api_key=str(api_key))
-# #         data = await asyncio.to_thread(kite.generate_session, request_token, api_secret=str(api_secret))
-        
-# #         token = data["access_token"]
-# #         await TradeControl.save_access_token(token)
-# #         RAM_STATE["access_token"] = token
-# #         RAM_STATE["api_key"] = str(api_key)
-# #         RAM_STATE["api_secret"] = str(api_secret)
-# #         RAM_STATE["kite"] = kite
-# #         RAM_STATE["kite"].set_access_token(token)
-        
-# #         logger.info("🔑 AUTH: Zerodha Session established.")
-# #         return RedirectResponse(url="/")
-# #     except Exception as e:
-# #         logger.error(f"❌ AUTH ERROR: {e}")
-# #         return {"status": "error", "message": str(e)}
-
-# # # --- SERVER ENTRY POINT ---
-
-# # if __name__ == "__main__":
-# #     port = int(os.environ.get("PORT", 8000))
-# #     # CRITICAL: Use workers=1 for memory consistency
-# #     uvicorn.run("main:app", host="0.0.0.0", port=port, loop="uvloop", workers=1)
-
-# import asyncio
-# import os
-# import logging
-# import json
-# from datetime import datetime, timedelta
-# import pytz
-# from typing import Dict
-
-# # Core FastAPI & Server
-# from fastapi import FastAPI
-# from fastapi.responses import HTMLResponse, RedirectResponse
-# from fastapi.middleware.cors import CORSMiddleware
-# import uvicorn
-
-# # Kite Connect SDK
-# from kiteconnect import KiteConnect, KiteTicker
-
-# # --- CRITICAL FIX 1: TWISTED SIGNAL BYPASS (FOR HEROKU) ---
-# from twisted.internet import reactor
-# _original_run = reactor.run
-# def _patched_reactor_run(*args, **kwargs):
-#     kwargs["installSignalHandlers"] = False
-#     return _original_run(*args, **kwargs)
-# reactor.run = _patched_reactor_run
-
-# # High-Performance Event Loop
-# try:
-#     import uvloop
-#     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-# except ImportError:
-#     pass
-
-# # Custom Engine Modules & Managers
-# from breakout_engine import BreakoutEngine
-# from momentum_engine import MomentumEngine
-# from redis_manager import TradeControl
-
-# # --- LOGGING SETUP ---
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-#     datefmt="%Y-%m-%d %H:%M:%S",
-# )
-# logger = logging.getLogger("Nexus_Async_Core")
-# IST = pytz.timezone("Asia/Kolkata")
-
-# # --- GLOBAL TICK COUNTER FOR HEARTBEAT ---
-# TICK_STATS = {"received": 0, "last_logged": datetime.now()}
-
-# # --- FASTAPI APP ---
-# app = FastAPI(strict_slashes=False)
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# STOCK_INDEX_MAPPING = {
-#     'MRF': 'NIFTY 500',
-#     '3MINDIA': 'NIFTY 500',
-#     'HONAUT': 'NIFTY 500',
-#     'ABBOTINDIA': 'NIFTY 500',
-#     'JSWHL': 'NIFTY 500',
-#     'POWERINDIA': 'NIFTY 500',
-#     'PTCIL': 'NIFTY 500',
-#     'FORCEMOT': 'NIFTY 500',
-#     'NEULANDLAB': 'NIFTY 500',
-#     'LMW': 'NIFTY 500',
-#     'TVSHLTD': 'NIFTY 500',
-#     'MAHSCOOTER': 'NIFTY 500',
-#     'ZFCVINDIA': 'NIFTY 500',
-#     'PGHH': 'NIFTY 500',
-#     'BAJAJHLDNG': 'NIFTY 500',
-#     'DYNAMATECH': 'NIFTY 500',
-#     'ASTRAZEN': 'NIFTY 500',
-#     'APARINDS': 'NIFTY 500',
-#     'GILLETTE': 'NIFTY 500',
-#     'WENDT': 'NIFTY 500',
-#     'TASTYBITE': 'NIFTY 500',
-#     'VOLTAMP': 'NIFTY 500',
-#     'CRAFTSMAN': 'NIFTY 500',
-#     'NSIL': 'NIFTY 500',
-#     'ESABINDIA': 'NIFTY 500',
-#     'NAVINFLUOR': 'NIFTY 500',
-#     'ICRA': 'NIFTY 500',
-#     'LINDEINDIA': 'NIFTY 500',
-#     'ATUL': 'NIFTY 500',
-#     'VSTTILLERS': 'NIFTY 500',
-#     'JKCEMENT': 'NIFTY 500',
-#     'PGHL': 'NIFTY 500',
-#     'LUMAXIND': 'NIFTY 500',
-#     'BLUEDART': 'NIFTY 500',
-#     'CERA': 'NIFTY 500',
-#     'PILANIINVS': 'NIFTY 500',
-#     'FOSECOIND': 'NIFTY 500',
-#     'VADILALIND': 'NIFTY 500',
-#     'KICL': 'NIFTY 500',
-#     'PFIZER': 'NIFTY 500',
-#     'SUNDARMFIN': 'NIFTY 500',
-#     'ORISSAMINE': 'NIFTY 500',
-#     'LTTS': 'NIFTY 500',
-#     'SANOFICONR': 'NIFTY 500',
-#     'CRISIL': 'NIFTY 500',
-#     'ECLERX': 'NIFTY 500',
-#     'FINEORG': 'NIFTY 500',
-#     'BAYERCROP': 'NIFTY 500',
-#     'TVSSRICHAK': 'NIFTY 500',
-#     'SANOFI': 'NIFTY 500',
-#     'SHILCTECH': 'NIFTY 500',
-#     'BASF': 'NIFTY 500',
-#     'KINGFA': 'NIFTY 500',
-#     'SCHAEFFLER': 'NIFTY 500',
-#     'SMLMAH': 'NIFTY 500',
-#     'AIAENG': 'NIFTY 500',
-#     'CEATLTD': 'NIFTY 500',
-#     'SWARAJENG': 'NIFTY 500',
-#     'GRWRHITECH': 'NIFTY 500',
-#     'ESCORTS': 'NIFTY 500',
-#     'BANARISUG': 'NIFTY 500',
-#     'AKZOINDIA': 'NIFTY 500',
-#     'INGERRAND': 'NIFTY 500',
-#     'VHL': 'NIFTY 500',
-#     'FLUOROCHEM': 'NIFTY 500',
-#     'KIRLOSIND': 'NIFTY 500',
-#     'KMEW': 'NIFTY 500',
-#     'RADICO': 'NIFTY 500',
-#     'NETWEB': 'NIFTY 500',
-#     'THANGAMAYL': 'NIFTY 500',
-#     'SHRIPISTON': 'NIFTY 500',
-#     'PRIVISCL': 'NIFTY 500',
-#     'TIMKEN': 'NIFTY 500',
-#     'GVT&D': 'NIFTY 500',
-#     'ETHOSLTD': 'NIFTY 500',
-#     'TCPLPACK': 'NIFTY 500',
-#     'WAAREEENER': 'NIFTY 500',
-#     'ANANDRATHI': 'NIFTY 500',
-#     'NDGL': 'NIFTY 500',
-#     'ENRIN': 'NIFTY 500',
-#     'LALPATHLAB': 'NIFTY 500',
-#     'THERMAX': 'NIFTY 500',
-#     'GODFRYPHLP': 'NIFTY 500',
-#     'BBL': 'NIFTY 500',
-#     'CARTRADE': 'NIFTY 500',
-#     'AJANTPHARM': 'NIFTY 500',
-#     'BHARATRAS': 'NIFTY 500',
-#     'ENDURANCE': 'NIFTY 500',
-#     'PRUDENT': 'NIFTY 500',
-#     'AIIL': 'NIFTY 500',
-#     'GLAXO': 'NIFTY 500',
-#     'DATAPATTNS': 'NIFTY 500',
-#     'DOMS': 'NIFTY 500',
-#     'RATNAMANI': 'NIFTY 500',
-#     'SHAILY': 'NIFTY 500',
-#     'INTERARCH': 'NIFTY 500',
-#     'GRSE': 'NIFTY 500',
-#     'HONDAPOWER': 'NIFTY 500',
-#     'BALKRISIND': 'NIFTY 500',
-#     'MTARTECH': 'NIFTY 500',
-#     'HYUNDAI': 'NIFTY 500',
-#     'JUBLCPL': 'NIFTY 500',
-#     'COROMANDEL': 'NIFTY 500',
-#     'RPGLIFE': 'NIFTY 500',
-#     'KDDL': 'NIFTY 500',
-#     'CENTUM': 'NIFTY 500',
-#     'FIEMIND': 'NIFTY 500',
-#     'SAFARI': 'NIFTY 500',
-#     'NBIFIN': 'NIFTY 500',
-#     'POWERMECH': 'NIFTY 500',
-#     'INDIAMART': 'NIFTY 500',
-#     'V2RETAIL': 'NIFTY 500',
-#     'STYLAMIND': 'NIFTY 500',
-#     'ANUP': 'NIFTY 500',
-#     'TIIL': 'NIFTY 500',
-#     'MASTEK': 'NIFTY 500',
-#     'E2E': 'NIFTY 500',
-#     'STYRENIX': 'NIFTY 500',
-#     'MPSLTD': 'NIFTY 500',
-#     'GALAXYSURF': 'NIFTY 500',
-#     'SUMMITSEC': 'NIFTY 500',
-#     'CAPLIPOINT': 'NIFTY 500',
-#     'CHOLAHLDNG': 'NIFTY 500',
-#     'TEGA': 'NIFTY 500',
-#     'METROPOLIS': 'NIFTY 500',
-#     'LGBBROSLTD': 'NIFTY 500',
-#     'POLYMED': 'NIFTY 500',
-#     'AUTOAXLES': 'NIFTY 500',
-#     'NH': 'NIFTY 500',
-#     'BBTC': 'NIFTY 500',
-#     'GRAVITA': 'NIFTY 500',
-#     'SKFINDIA': 'NIFTY 500',
-#     'CIGNITITEC': 'NIFTY 500',
-#     'TATACOMM': 'NIFTY 500',
-#     'JBCHEPHARM': 'NIFTY 500',
-#     'GRPLTD': 'NIFTY 500',
-#     'ACC': 'NIFTY 500',
-#     'GKWLIMITED': 'NIFTY 500',
-#     'SANSERA': 'NIFTY 500',
-#     'BEML': 'NIFTY 500',
-#     'AFFLE': 'NIFTY 500',
-#     'BHARTIHEXA': 'NIFTY 500',
-#     'GLAND': 'NIFTY 500',
-#     'ABREL': 'NIFTY 500',
-#     'ZOTA': 'NIFTY 500',
-#     'SJS': 'NIFTY 500',
-#     'ACUTAAS': 'NIFTY 500',
-#     'TBOTEK': 'NIFTY 500',
-#     'UBL': 'NIFTY 500',
-#     'IKS': 'NIFTY 500',
-#     'MAPMYINDIA': 'NIFTY 500',
-#     'BETA': 'NIFTY 500',
-#     'KIRLOSBROS': 'NIFTY 500',
-#     'VEEDOL': 'NIFTY 500',
-#     'ONESOURCE': 'NIFTY 500',
-#     'IFBIND': 'NIFTY 500',
-#     'AZAD': 'NIFTY 500',
-#     'HESTERBIO': 'NIFTY 500',
-#     'TEAMLEASE': 'NIFTY 500',
-#     'COCHINSHIP': 'NIFTY 500',
-#     'INDOTECH': 'NIFTY 500',
-#     'THEJO': 'NIFTY 500',
-#     'ALKYLAMINE': 'NIFTY 500',
-#     'VINATIORGA': 'NIFTY 500',
-#     'PGIL': 'NIFTY 500',
-#     'GRINDWELL': 'NIFTY 500',
-#     'YASHO': 'NIFTY 500',
-#     'ERIS': 'NIFTY 500',
-#     'LGEINDIA': 'NIFTY 500',
-#     'AAVAS': 'NIFTY 500',
-#     'BIRLANU': 'NIFTY 500',
-#     'CPPLUS': 'NIFTY 500',
-#     'CARERATING': 'NIFTY 500',
-#     'EIMCOELECO': 'NIFTY 500',
-#     'DEEPAKNTR': 'NIFTY 500',
-#     'JINDALPHOT': 'NIFTY 500',
-#     'PIRAMALFIN': 'NIFTY 500',
-#     'SOLEX': 'NIFTY 500',
-#     'HIRECT': 'NIFTY 500',
-#     'ARMANFIN': 'NIFTY 500',
-#     'LUMAXTECH': 'NIFTY 500',
-#     'IPCALAB': 'NIFTY 500',
-#     'MIDWESTLTD': 'NIFTY 500',
-#     'PIXTRANS': 'NIFTY 500',
-#     'NPST': 'NIFTY 500',
-#     'SOBHA': 'NIFTY 500',
-#     'EMCURE': 'NIFTY 500',
-#     'TATVA': 'NIFTY 500',
-#     'DPABHUSHAN': 'NIFTY 500',
-#     'WELINV': 'NIFTY 500',
-#     'JCHAC': 'NIFTY 500',
-#     'RRKABEL': 'NIFTY 500',
-#     'VENKEYS': 'NIFTY 500',
-#     'NILKAMAL': 'NIFTY 500',
-#     'JLHL': 'NIFTY 500',
-#     'VINDHYATEL': 'NIFTY 500',
-#     'EPIGRAL': 'NIFTY 500',
-#     'IMFA': 'NIFTY 500',
-#     'ZENTEC': 'NIFTY 500',
-#     'RAINBOW': 'NIFTY 500',
-#     'CONCORDBIO': 'NIFTY 500',
-#     'RANEHOLDIN': 'NIFTY 500',
-#     'MANORAMA': 'NIFTY 500',
-#     'WOCKPHARMA': 'NIFTY 500',
-#     'NGLFINE': 'NIFTY 500',
-#     'ACCELYA': 'NIFTY 500',
-#     'ANURAS': 'NIFTY 500',
-#     'POCL': 'NIFTY 500',
-#     'CREDITACC': 'NIFTY 500',
-#     'LLOYDSME': 'NIFTY 500',
-#     'TRAVELFOOD': 'NIFTY 500',
-#     'AMBIKCO': 'NIFTY 500',
-#     'SUNCLAY': 'NIFTY 500',
-#     'PUNJABCHEM': 'NIFTY 500',
-#     'IFBAGRO': 'NIFTY 500',
-#     'VENUSPIPES': 'NIFTY 500',
-#     'WABAG': 'NIFTY 500',
-#     'DCMSHRIRAM': 'NIFTY 500',
-#     'NESCO': 'NIFTY 500',
-#     'DEEPAKFERT': 'NIFTY 500',
-#     'INDIGOPNTS': 'NIFTY 500',
-#     'SASKEN': 'NIFTY 500',
-#     'DODLA': 'NIFTY 500',
-#     'SPECTRUM': 'NIFTY 500',
-#     'OLECTRA': 'NIFTY 500',
-#     'DHANUKA': 'NIFTY 500',
-#     'APOLSINHOT': 'NIFTY 500',
-#     'HOMEFIRST': 'NIFTY 500',
-#     'KPIL': 'NIFTY 500',
-#     'METROBRAND': 'NIFTY 500',
-#     'DHUNINV': 'NIFTY 500',
-#     'GULFOILLUB': 'NIFTY 500',
-#     'MALLCOM': 'NIFTY 500',
-#     'MEDANTA': 'NIFTY 500',
-#     'AURIONPRO': 'NIFTY 500',
-#     'UTIAMC': 'NIFTY 500',
-#     'KIRLOSENG': 'NIFTY 500',
-#     'INOXINDIA': 'NIFTY 500',
-#     'RAYMONDLSL': 'NIFTY 500',
-#     'MGL': 'NIFTY 500',
-#     'SIGNATURE': 'NIFTY 500',
-#     'BALAMINES': 'NIFTY 500',
-#     'LUXIND': 'NIFTY 500',
-#     'GESHIP': 'NIFTY 500',
-#     'TECHNOE': 'NIFTY 500',
-#     'NIBE': 'NIFTY 500',
-#     'GOODLUCK': 'NIFTY 500',
-#     'JPOLYINVST': 'NIFTY 500',
-#     'NEOGEN': 'NIFTY 500',
-#     'DIAMONDYD': 'NIFTY 500',
-#     'JUBLPHARMA': 'NIFTY 500',
-#     'ADOR': 'NIFTY 500',
-#     'GMMPFAUDLR': 'NIFTY 500',
-#     'HAPPYFORGE': 'NIFTY 500',
-#     'BIRLACORPN': 'NIFTY 500',
-#     'INDIAGLYCO': 'NIFTY 500',
-#     'SANDESH': 'NIFTY 500',
-#     'TTKHLTCARE': 'NIFTY 500',
-#     'CHEVIOT': 'NIFTY 500',
-#     'RAMCOCEM': 'NIFTY 500',
-#     'KAJARIACER': 'NIFTY 500',
-#     'PVRINOX': 'NIFTY 500',
-#     'TCI': 'NIFTY 500',
-#     'RACLGEAR': 'NIFTY 500',
-#     'KIRLPNU': 'NIFTY 500',
-#     'IMPAL': 'NIFTY 500',
-#     'EIDPARRY': 'NIFTY 500',
-#     'DREDGECORP': 'NIFTY 500',
-#     'INTELLECT': 'NIFTY 500',
-#     'SEAMECLTD': 'NIFTY 500',
-#     'KERNEX': 'NIFTY 500',
-#     'GRINFRA': 'NIFTY 500',
-#     'CCL': 'NIFTY 500',
-#     'EXPLEOSOL': 'NIFTY 500',
-#     'HATSUN': 'NIFTY 500',
-#     'GODREJIND': 'NIFTY 500',
-#     'MACPOWER': 'NIFTY 500',
-#     'WEALTH': 'NIFTY 500',
-#     'GROBTEA': 'NIFTY 500',
-#     'GMBREW': 'NIFTY 500',
-#     'SUDARSCHEM': 'NIFTY 500',
-#     'ENTERO': 'NIFTY 500',
-#     'ASAHIINDIA': 'NIFTY 500',
-#     'RPEL': 'NIFTY 500',
-#     'AJMERA': 'NIFTY 500',
-#     'VIJAYA': 'NIFTY 500',
-#     'DSSL': 'NIFTY 500',
-#     'KPRMILL': 'NIFTY 500',
-#     'KSCL': 'NIFTY 500',
-#     'GABRIEL': 'NIFTY 500',
-#     'XPROINDIA': 'NIFTY 500',
-#     'GLOBUSSPR': 'NIFTY 500',
-#     'BATAINDIA': 'NIFTY 500',
-#     'ASALCBR': 'NIFTY 500',
-#     'AHLUCONT': 'NIFTY 500',
-#     'JYOTICNC': 'NIFTY 500',
-#     'SHARDAMOTR': 'NIFTY 500',
-#     'WAAREERTL': 'NIFTY 500',
-#     'MAITHANALL': 'NIFTY 500',
-#     'UNIMECH': 'NIFTY 500',
-#     'SUNDRMFAST': 'NIFTY 500',
-#     'ELDEHSG': 'NIFTY 500',
-#     'ACE': 'NIFTY 500',
-#     'ARE&M': 'NIFTY 500',
-#     'EXCELINDUS': 'NIFTY 500',
-#     'CARYSIL': 'NIFTY 500',
-#     'CHENNPETRO': 'NIFTY 500',
-#     'WHIRLPOOL': 'NIFTY 500',
-#     'ATLANTAELE': 'NIFTY 500',
-#     'NUCLEUS': 'NIFTY 500',
-#     'PREMIERENE': 'NIFTY 500',
-#     'SHARDACROP': 'NIFTY 500',
-#     'CANFINHOME': 'NIFTY 500',
-#     'CLEAN': 'NIFTY 500',
-#     'ASTRAMICRO': 'NIFTY 500',
-#     'NATCOPHARM': 'NIFTY 500',
-#     'KAUSHALYA': 'NIFTY 500',
-#     'CHALET': 'NIFTY 500',
-#     'SAILIFE': 'NIFTY 500',
-#     'PSPPROJECT': 'NIFTY 500',
-#     'UNIVCABLES': 'NIFTY 500',
-#     'ALIVUS': 'NIFTY 500',
-#     'BRIGADE': 'NIFTY 500',
-#     'STAR': 'NIFTY 500',
-#     'APLLTD': 'NIFTY 500',
-#     'CARBORUNIV': 'NIFTY 500',
-#     'GANECOS': 'NIFTY 500',
-#     'AVALON': 'NIFTY 500',
-#     'NAM-INDIA': 'NIFTY 500',
-#     'SYMPHONY': 'NIFTY 500',
-#     'ALLDIGI': 'NIFTY 500',
-#     'SUBROS': 'NIFTY 500',
-#     'POKARNA': 'NIFTY 500',
-#     'AETHER': 'NIFTY 500',
-#     'MOTILALOFS': 'NIFTY 500',
-#     'INDIASHLTR': 'NIFTY 500',
-#     'ALICON': 'NIFTY 500',
-#     'NEWGEN': 'NIFTY 500',
-#     'IZMO': 'NIFTY 500',
-#     'ORCHPHARMA': 'NIFTY 500',
-#     'YUKEN': 'NIFTY 500',
-#     'GOKEX': 'NIFTY 500',
-#     'ELECTHERM': 'NIFTY 500',
-#     'CENTURYPLY': 'NIFTY 500',
-#     'WHEELS': 'NIFTY 500',
-#     'PASHUPATI': 'NIFTY 500',
-#     'CEMPRO': 'NIFTY 500',
-#     'POLYPLEX': 'NIFTY 500',
-#     'FACT': 'NIFTY 500',
-#     'DATAMATICS': 'NIFTY 500',
-#     'PITTIENG': 'NIFTY 500',
-#     'RIIL': 'NIFTY 500',
-#     'NDRAUTO': 'NIFTY 500',
-#     'GANESHHOU': 'NIFTY 500',
-#     'HBLENGINE': 'NIFTY 500',
-#     'ISGEC': 'NIFTY 500',
-#     'AVANTIFEED': 'NIFTY 500',
-#     'MEDPLUS': 'NIFTY 500',
-#     'SHYAMMETL': 'NIFTY 500',
-#     'SILVERTUC': 'NIFTY 500',
-#     'INDNIPPON': 'NIFTY 500',
-#     'TINNARUBR': 'NIFTY 500',
-#     'WELCORP': 'NIFTY 500',
-#     'SENORES': 'NIFTY 500',
-#     'WINDLAS': 'NIFTY 500',
-#     'CNL': 'NIFTY 500',
-#     'JKLAKSHMI': 'NIFTY 500',
-#     'KRN': 'NIFTY 500',
-#     'PROTEAN': 'NIFTY 500',
-#     'ALBERTDAVD': 'NIFTY 500',
-#     'HDBFS': 'NIFTY 500',
-#     'PKTEA': 'NIFTY 500',
-#     'ICEMAKE': 'NIFTY 500',
-#     'HEXT': 'NIFTY 500',
-#     '63MOONS': 'NIFTY 500',
-#     'VMART': 'NIFTY 500',
-#     'BIL': 'NIFTY 500',
-#     'NELCO': 'NIFTY 500',
-#     'HGINFRA': 'NIFTY 500',
-#     'DECCANCE': 'NIFTY 500',
-#     'MANGLMCEM': 'NIFTY 500',
-#     'GALAPREC': 'NIFTY 500',
-#     'ABSLAMC': 'NIFTY 500',
-#     'AEGISLOG': 'NIFTY 500',
-#     'GANDHITUBE': 'NIFTY 500',
-#     'RPSGVENT': 'NIFTY 500',
-#     'CHOICEIN': 'NIFTY 500',
-#     'TEMBO': 'NIFTY 500',
-#     'ASHAPURMIN': 'NIFTY 500',
-#     'SUPRIYA': 'NIFTY 500',
-#     'RML': 'NIFTY 500',
-#     'AARTIPHARM': 'NIFTY 500',
-#     'FINCABLES': 'NIFTY 500',
-#     'SYRMA': 'NIFTY 500',
-#     'KSB': 'NIFTY 500',
-#     'ZENSARTECH': 'NIFTY 500',
-#     'KRSNAA': 'NIFTY 500',
-#     'BIKAJI': 'NIFTY 500',
-#     'SPAL': 'NIFTY 500',
-#     'CONTROLPR': 'NIFTY 500',
-#     'AGI': 'NIFTY 500',
-#     'KSL': 'NIFTY 500',
-#     'TATAINVEST': 'NIFTY 500',
-#     'INNOVACAP': 'NIFTY 500',
-#     'SVLL': 'NIFTY 500',
-#     'CAPILLARY': 'NIFTY 500',
-#     'COSMOFIRST': 'NIFTY 500',
-#     'SCHNEIDER': 'NIFTY 500',
-#     'SUNDROP': 'NIFTY 500',
-#     'HCG': 'NIFTY 500',
-#     'RVTH': 'NIFTY 500',
-#     'JUSTDIAL': 'NIFTY 500',
-#     'BANCOINDIA': 'NIFTY 500',
-#     'DENORA': 'NIFTY 500',
-#     'VENTIVE': 'NIFTY 500',
-#     'JSLL': 'NIFTY 500',
-#     'MONTECARLO': 'NIFTY 500',
-#     'ASTEC': 'NIFTY 500',
-#     'QPOWER': 'NIFTY 500',
-#     'INSECTICID': 'NIFTY 500',
-#     'YATHARTH': 'NIFTY 500',
-#     'ANTHEM': 'NIFTY 500',
-#     'SUDEEPPHRM': 'NIFTY 500',
-#     'SALZERELEC': 'NIFTY 500',
-#     'JUBLINGREA': 'NIFTY 500',
-#     'INFOBEAN': 'NIFTY 500',
-#     'KEC': 'NIFTY 500',
-#     'BUTTERFLY': 'NIFTY 500',
-#     'AMRUTANJAN': 'NIFTY 500',
-#     'TDPOWERSYS': 'NIFTY 500',
-#     'AGARIND': 'NIFTY 500',
-#     'FAIRCHEMOR': 'NIFTY 500',
-#     'ROUTE': 'NIFTY 500',
-#     'SUNDRMBRAK': 'NIFTY 500',
-#     'ROSSTECH': 'NIFTY 500',
-#     'GARFIBRES': 'NIFTY 500',
-#     'PARAS': 'NIFTY 500',
-#     'KIMS': 'NIFTY 500',
-#     'RATEGAIN': 'NIFTY 500',
-#     'KALYANIFRG': 'NIFTY 500',
-#     'RAMCOSYS': 'NIFTY 500',
-#     'SPLPETRO': 'NIFTY 500',
-#     'BLACKBUCK': 'NIFTY 500',
-#     'SHAKTIPUMP': 'NIFTY 500',
-#     'VARROC': 'NIFTY 500',
-#     'SIYSIL': 'NIFTY 500',
-#     'EUREKAFORB': 'NIFTY 500',
-#     'ATHERENERG': 'NIFTY 500',
-#     'TTKPRESTIG': 'NIFTY 500',
-#     'SWELECTES': 'NIFTY 500',
-#     'GLOSTERLTD': 'NIFTY 500',
-#     'BALUFORGE': 'NIFTY 500',
-#     'RUBICON': 'NIFTY 500',
-#     'SUYOG': 'NIFTY 500',
-#     'ABDL': 'NIFTY 500',
-#     'ORKLAINDIA': 'NIFTY 500',
-#     'STOVEKRAFT': 'NIFTY 500',
-#     'EMUDHRA': 'NIFTY 500',
-#     'ASTERDM': 'NIFTY 500',
-#     'RAMRAT': 'NIFTY 500',
-#     'PNGJL': 'NIFTY 500',
-#     'PRICOLLTD': 'NIFTY 500',
-#     'AJAXENGG': 'NIFTY 500',
-#     'VIMTALABS': 'NIFTY 500',
-#     'ARSSBL': 'NIFTY 500',
-#     'MANYAVAR': 'NIFTY 500',
-#     'ARVSMART': 'NIFTY 500',
-#     'WEWORK': 'NIFTY 500',
-#     'DIVGIITTS': 'NIFTY 500',
-#     'GALLANTT': 'NIFTY 500',
-#     'GODREJAGRO': 'NIFTY 500',
-#     'SOLARA': 'NIFTY 500',
-#     'ROSSARI': 'NIFTY 500',
-#     'MINDACORP': 'NIFTY 500',
-#     'TRANSRAILL': 'NIFTY 500',
-#     'PAUSHAKLTD': 'NIFTY 500',
-#     'SFL': 'NIFTY 500',
-#     'GHCL': 'NIFTY 500',
-#     'MOLDTKPAC': 'NIFTY 500',
-#     'CELLO': 'NIFTY 500',
-#     'JBMA': 'NIFTY 500',
-#     'FIVESTAR': 'NIFTY 500',
-#     'TCIEXP': 'NIFTY 500',
-#     'NAVA': 'NIFTY 500',
-#     'JKIL': 'NIFTY 500',
-#     'SRM': 'NIFTY 500',
-#     'SUNTV': 'NIFTY 500',
-#     'KIRIINDUS': 'NIFTY 500',
-#     'SANDHAR': 'NIFTY 500',
-#     'MAHSEAMLES': 'NIFTY 500',
-#     'BLUEJET': 'NIFTY 500',
-#     'JARO': 'NIFTY 500',
-#     'PICCADIL': 'NIFTY 500',
-#     'TANLA': 'NIFTY 500',
-#     'ITDC': 'NIFTY 500',
-#     'RAMKY': 'NIFTY 500',
-#     'WESTLIFE': 'NIFTY 500',
-#     'ANANTRAJ': 'NIFTY 500',
-#     'MARATHON': 'NIFTY 500',
-#     'MATRIMONY': 'NIFTY 500',
-#     'TIPSMUSIC': 'NIFTY 500',
-#     'BORORENEW': 'NIFTY 500',
-#     'STUDDS': 'NIFTY 500',
-#     'WONDERLA': 'NIFTY 500',
-#     'CARRARO': 'NIFTY 500',
-#     'GRAPHITE': 'NIFTY 500',
-#     'BERGEPAINT': 'NIFTY 500',
-#     'EMAMILTD': 'NIFTY 500',
-#     'RUSTOMJEE': 'NIFTY 500',
-#     'OPTIEMUS': 'NIFTY 500',
-#     'COHANCE': 'NIFTY 500',
-#     'HEG': 'NIFTY 500',
-#     'HNDFDS': 'NIFTY 500',
-#     'TRITURBINE': 'NIFTY 500',
-#     'SGIL': 'NIFTY 500',
-#     'OSWALPUMPS': 'NIFTY 500',
-#     'STEL': 'NIFTY 500',
-#     'BLUESTONE': 'NIFTY 500',
-#     'INDGN': 'NIFTY 500',
-#     'KRISHANA': 'NIFTY 500',
-#     'ARROWGREEN': 'NIFTY 500',
-#     'GMDCLTD': 'NIFTY 500',
-#     'KRYSTAL': 'NIFTY 500',
-#     'LANDMARK': 'NIFTY 500',
-#     'BBOX': 'NIFTY 500',
-#     'RKFORGE': 'NIFTY 500',
-#     'SILINV': 'NIFTY 500',
-#     'EVERESTIND': 'NIFTY 500',
-#     'WELENT': 'NIFTY 500',
-#     'LEMERITE': 'NIFTY 500',
-#     'SARDAEN': 'NIFTY 500',
-#     'APOLLOTYRE': 'NIFTY 500',
-#     'AVL': 'NIFTY 500',
-#     'GUJALKALI': 'NIFTY 500',
-#     'TMB': 'NIFTY 500',
-#     'MAGADSUGAR': 'NIFTY 500',
-#     'AGARWALEYE': 'NIFTY 500',
-#     'JINDRILL': 'NIFTY 500',
-#     'PREMEXPLN': 'NIFTY 500',
-#     'ASAL': 'NIFTY 500',
-#     'VISHNU': 'NIFTY 500',
-#     'LATENTVIEW': 'NIFTY 500',
-#     'JINDALPOLY': 'NIFTY 500',
-#     'AWFIS': 'NIFTY 500',
-#     'ARVINDFASN': 'NIFTY 500',
-#     'SRHHYPOLTD': 'NIFTY 500',
-#     'GNFC': 'NIFTY 500',
-#     'HAPPSTMNDS': 'NIFTY 500',
-#     'KKCL': 'NIFTY 500',
-#     'ACI': 'NIFTY 500',
-#     'UNIPARTS': 'NIFTY 500',
-#     'AADHARHFC': 'NIFTY 500',
-#     'DICIND': 'NIFTY 500',
-#     'ELGIEQUIP': 'NIFTY 500',
-#     'MAYURUNIQ': 'NIFTY 500',
-#     'RAYMONDREL': 'NIFTY 500',
-#     'ELECON': 'NIFTY 500',
-#     'MANORG': 'NIFTY 500',
-#     'TEJASNET': 'NIFTY 500',
-#     'VESUVIUS': 'NIFTY 500',
-#     'BAJAJELEC': 'NIFTY 500',
-#     'NRAIL': 'NIFTY 500',
-#     'SIRCA': 'NIFTY 500',
-#     'TENNIND': 'NIFTY 500',
-#     'LINCOLN': 'NIFTY 500',
-#     'HERITGFOOD': 'NIFTY 500',
-#     'SMARTWORKS': 'NIFTY 500',
-#     'GOCOLORS': 'NIFTY 500',
-#     'UFLEX': 'NIFTY 500',
-#     'MSTCLTD': 'NIFTY 500',
-#     'INDRAMEDCO': 'NIFTY 500',
-#     'SHANTIGEAR': 'NIFTY 500',
-#     'KRISHIVAL': 'NIFTY 500',
-#     'MEDIASSIST': 'NIFTY 500',
-#     'REPRO': 'NIFTY 500',
-#     'ASKAUTOLTD': 'NIFTY 500',
-#     'HSCL': 'NIFTY 500',
-#     'STARHEALTH': 'NIFTY 500',
-#     'FMGOETZE': 'NIFTY 500',
-#     'CHEMFAB': 'NIFTY 500',
-#     'HLEGLAS': 'NIFTY 500',
-#     'TSFINV': 'NIFTY 500',
-#     'FAZE3Q': 'NIFTY 500',
-#     'SUMICHEM': 'NIFTY 500',
-#     'SWANCORP': 'NIFTY 500',
-#     'UNICHEMLAB': 'NIFTY 500',
-#     'JKTYRE': 'NIFTY 500',
-#     'TI': 'NIFTY 500',
-#     'RAYMOND': 'NIFTY 500',
-#     'SBCL': 'NIFTY 500',
-#     'GRMOVER': 'NIFTY 500',
-#     'SANATHAN': 'NIFTY 500',
-#     'CENTENKA': 'NIFTY 500',
-#     'HGS': 'NIFTY 500',
-#     'VTL': 'NIFTY 500',
-#     'DBL': 'NIFTY 500',
-#     'RAJRATAN': 'NIFTY 500',
-#     'JASH': 'NIFTY 500',
-#     'AWHCL': 'NIFTY 500',
-#     'SUPRAJIT': 'NIFTY 500',
-#     'MAXESTATES': 'NIFTY 500',
-#     'INNOVANA': 'NIFTY 500',
-#     'UNITEDTEA': 'NIFTY 500',
-#     'MANINDS': 'NIFTY 500',
-#     'SANGAMIND': 'NIFTY 500',
-#     'HEUBACHIND': 'NIFTY 500',
-#     'RHIM': 'NIFTY 500',
-#     'ATULAUTO': 'NIFTY 500',
-#     'DEEPINDS': 'NIFTY 500',
-#     'USHAMART': 'NIFTY 500',
-#     'PRECOT': 'NIFTY 500',
-#     'GUJAPOLLO': 'NIFTY 500',
-#     'SHOPERSTOP': 'NIFTY 500',
-#     'BALRAMCHIN': 'NIFTY 500',
-#     'SKIPPER': 'NIFTY 500',
-#     'SKMEGGPROD': 'NIFTY 500',
-#     'THYROCARE': 'NIFTY 500',
-#     'JSFB': 'NIFTY 500',
-#     'CHAMBLFERT': 'NIFTY 500',
-#     'IGARASHI': 'NIFTY 500',
-#     'BSOFT': 'NIFTY 500',
-#     'CYIENTDLM': 'NIFTY 500',
-#     'DLINKINDIA': 'NIFTY 500',
-#     'ZYDUSWELL': 'NIFTY 500',
-#     'IDEAFORGE': 'NIFTY 500',
-#     'NIPPOBATRY': 'NIFTY 500',
-#     'KPIGREEN': 'NIFTY 500',
-#     'AKUMS': 'NIFTY 500',
-#     'SAKAR': 'NIFTY 500',
-#     'MAMATA': 'NIFTY 500',
-#     'HINDCOMPOS': 'NIFTY 500',
-#     'SOMANYCERA': 'NIFTY 500',
-#     'CEWATER': 'NIFTY 500',
-#     'FDC': 'NIFTY 500',
-#     'SWIGGY': 'NIFTY 500',
-#     'ABCOTS': 'NIFTY 500',
-#     'INDIACEM': 'NIFTY 500',
-#     'GENESYS': 'NIFTY 500',
-#     'EMSLIMITED': 'NIFTY 500',
-#     'BAJAJHCARE': 'NIFTY 500',
-#     'INDIANHUME': 'NIFTY 500',
-#     'BFINVEST': 'NIFTY 500',
-#     'NINSYS': 'NIFTY 500',
-#     'MBAPL': 'NIFTY 500',
-#     'WSTCSTPAPR': 'NIFTY 500',
-#     'TIPSFILMS': 'NIFTY 500',
-#     'TRUALT': 'NIFTY 500',
-#     'IGPL': 'NIFTY 500',
-#     'LENSKART': 'NIFTY 500',
-#     'MEDICAMEQ': 'NIFTY 500',
-#     'RELAXO': 'NIFTY 500',
-#     'NIITMTS': 'NIFTY 500',
-#     'RSYSTEMS': 'NIFTY 500',
-#     'REPCOHOME': 'NIFTY 500',
-#     'MAHLIFE': 'NIFTY 500',
-#     'SUNTECK': 'NIFTY 500',
-#     'RISHABH': 'NIFTY 500',
-#     'AARTISURF': 'NIFTY 500',
-#     'CIEINDIA': 'NIFTY 500',
-#     'AFCONS': 'NIFTY 500',
-#     'THELEELA': 'NIFTY 500',
-#     'ANTELOPUS': 'NIFTY 500',
-#     'GUJGASLTD': 'NIFTY 500',
-#     'AARTIDRUGS': 'NIFTY 500',
-#     'CUPID': 'NIFTY 500',
-#     'MODINATUR': 'NIFTY 500',
-#     'HPL': 'NIFTY 500',
-#     'GOACARBON': 'NIFTY 500',
-#     'CSBBANK': 'NIFTY 500',
-#     'KRBL': 'NIFTY 500',
-#     'GUJTHEM': 'NIFTY 500',
-#     'BELLACASA': 'NIFTY 500',
-#     'TAJGVK': 'NIFTY 500',
-#     'SGFIN': 'NIFTY 500',
-#     'KOLTEPATIL': 'NIFTY 500',
-#     'SHREEPUSHK': 'NIFTY 500',
-#     'ROHLTD': 'NIFTY 500',
-#     'JAINREC': 'NIFTY 500',
-#     'AVADHSUGAR': 'NIFTY 500',
-#     'GICRE': 'NIFTY 500',
-#     'HINDCOPPER': 'NIFTY 500',
-#     'LTFOODS': 'NIFTY 500',
-#     'DOLPHIN': 'NIFTY 500',
-#     'EIHOTEL': 'NIFTY 500',
-#     'MBEL': 'NIFTY 500',
-#     'SAATVIKGL': 'NIFTY 500',
-#     'SHIVALIK': 'NIFTY 500',
-#     'TMCV': 'NIFTY 500',
-#     'HARSHA': 'NIFTY 500',
-#     'SOTL': 'NIFTY 500',
-#     'APCOTEXIND': 'NIFTY 500',
-#     'GOLDIAM': 'NIFTY 500',
-#     'MEIL': 'NIFTY 500',
-#     'JGCHEM': 'NIFTY 500',
-#     'SAREGAMA': 'NIFTY 500',
-#     'JKPAPER': 'NIFTY 500',
-#     'BESTAGRO': 'NIFTY 500',
-#     'PANACEABIO': 'NIFTY 500',
-#     'PDSL': 'NIFTY 500',
-#     'CREST': 'NIFTY 500',
-#     'MMFL': 'NIFTY 500',
-#     'EIHAHOTELS': 'NIFTY 500',
-#     'TRIVENI': 'NIFTY 500',
-#     'AARTIIND': 'NIFTY 500',
-#     'HARIOMPIPE': 'NIFTY 500',
-#     'KAYA': 'NIFTY 500',
-#     'ELLEN': 'NIFTY 500',
-#     'DOLLAR': 'NIFTY 500',
-#     'VIPIND': 'NIFTY 500',
-#     'IONEXCHANG': 'NIFTY 500',
-#     'CMSINFO': 'NIFTY 500',
-#     'SONATSOFTW': 'NIFTY 500',
-#     'KALPATARU': 'NIFTY 500',
-#     'THOMASCOTT': 'NIFTY 500',
-#     'GUFICBIO': 'NIFTY 500',
-#     'ZAGGLE': 'NIFTY 500',
-#     'KPEL': 'NIFTY 500',
-#     'TMPV': 'NIFTY 500',
-#     'M&MFIN': 'NIFTY 500',
-#     'MODIS': 'NIFTY 500',
-#     'NUVOCO': 'NIFTY 500',
-#     'KIOCL': 'NIFTY 500',
-#     'RPTECH': 'NIFTY 500',
-#     'ORIENTTECH': 'NIFTY 500',
-#     'GODIGIT': 'NIFTY 500',
-#     'KILITCH': 'NIFTY 500',
-#     'FSL': 'NIFTY 500',
-#     'GEECEE': 'NIFTY 500',
-#     'SGMART': 'NIFTY 500',
-#     'DYCL': 'NIFTY 500',
-#     'SHREEJISPG': 'NIFTY 500',
-#     'SHILPAMED': 'NIFTY 500',
-#     'VGUARD': 'NIFTY 500',
-#     'VIDHIING': 'NIFTY 500',
-#     'RAILTEL': 'NIFTY 500',
-#     'ASIANHOTNR': 'NIFTY 500',
-#     'MOIL': 'NIFTY 500',
-#     'SIS': 'NIFTY 500',
-#     'EVEREADY': 'NIFTY 500',
-#     'TATACAP': 'NIFTY 500',
-#     'SOFTTECH': 'NIFTY 500',
-#     'MAHLOG': 'NIFTY 500',
-#     'MASFIN': 'NIFTY 500',
-#     'SKYGOLD': 'NIFTY 500',
-#     'ARIES': 'NIFTY 500',
-#     'BAJAJINDEF': 'NIFTY 500',
-#     'SMSPHARMA': 'NIFTY 500',
-#     'BLS': 'NIFTY 500',
-#     'IGIL': 'NIFTY 500',
-#     'PARAGMILK': 'NIFTY 500',
-#     'IIFLCAPS': 'NIFTY 500',
-#     'BANSALWIRE': 'NIFTY 500',
-#     'DENTA': 'NIFTY 500',
-#     'ARVIND': 'NIFTY 500',
-#     'NITINSPIN': 'NIFTY 500',
-#     'RAMCOIND': 'NIFTY 500',
-#     'ZUARIIND': 'NIFTY 500',
-#     'ARIHANTSUP': 'NIFTY 500',
-#     'KEYFINSERV': 'NIFTY 500',
-#     'MHRIL': 'NIFTY 500',
-#     'DIFFNKG': 'NIFTY 500',
-#     'GOPAL': 'NIFTY 500',
-#     'PCBL': 'NIFTY 500',
-#     'GVPIL': 'NIFTY 500',
-#     'SENCO': 'NIFTY 500',
-#     'ADVENZYMES': 'NIFTY 500',
-#     'SEMAC': 'NIFTY 500',
-#     '5PAISA': 'NIFTY 500',
-#     'ZODIAC': 'NIFTY 500',
-#     'SANGHVIMOV': 'NIFTY 500',
-#     'ITI': 'NIFTY 500',
-#     'IRIS': 'NIFTY 500',
-#     'MONARCH': 'NIFTY 500',
-#     'GNA': 'NIFTY 500',
-#     'PRAJIND': 'NIFTY 500',
-#     'GENUSPOWER': 'NIFTY 500',
-#     'GOCLCORP': 'NIFTY 500',
-#     'TRF': 'NIFTY 500',
-#     'EUROPRATIK': 'NIFTY 500',
-#     'SASTASUNDR': 'NIFTY 500',
-#     'MIDHANI': 'NIFTY 500',
-#     'APOLLOPIPE': 'NIFTY 500',
-#     'SHIVAUM': 'NIFTY 500',
-#     'VLSFINANCE': 'NIFTY 500',
-#     'BOROLTD': 'NIFTY 500',
-#     'FLAIR': 'NIFTY 500',
-#     'CRAMC': 'NIFTY 500',
-#     'KAPSTON': 'NIFTY 500',
-#     'DALMIASUG': 'NIFTY 500',
-#     'NURECA': 'NIFTY 500',
-#     'ASIANENE': 'NIFTY 500',
-#     'EPACKPEB': 'NIFTY 500',
-#     'STYL': 'NIFTY 500',
-#     'EFCIL': 'NIFTY 500',
-#     'ZUARI': 'NIFTY 500',
-#     'APTUS': 'NIFTY 500',
-#     'ASHIANA': 'NIFTY 500',
-#     'CSLFINANCE': 'NIFTY 500',
-#     'DVL': 'NIFTY 500',
-#     'FIRSTCRY': 'NIFTY 500',
-#     'GSPL': 'NIFTY 500',
-#     'VSSL': 'NIFTY 500',
-#     'KSOLVES': 'NIFTY 500',
-#     'SOLARWORLD': 'NIFTY 500',
-#     'ICIL': 'NIFTY 500',
-#     'IVALUE': 'NIFTY 500',
-#     'SALONA': 'NIFTY 500',
-#     'NRBBEARING': 'NIFTY 500',
-#     'S&SPOWER': 'NIFTY 500',
-#     'OAL': 'NIFTY 500',
-#     'SCPL': 'NIFTY 500',
-#     'DDEVPLSTIK': 'NIFTY 500',
-#     'IRMENERGY': 'NIFTY 500',
-#     'JYOTHYLAB': 'NIFTY 500',
-#     'PONNIERODE': 'NIFTY 500',
-#     'SURAKSHA': 'NIFTY 500',
-#     'CRIZAC': 'NIFTY 500',
-#     'QUICKHEAL': 'NIFTY 500',
-#     'TALBROAUTO': 'NIFTY 500',
-#     'PRIMESECU': 'NIFTY 500',
-#     'REDINGTON': 'NIFTY 500',
-#     'TARIL': 'NIFTY 500',
-#     'ARTEMISMED': 'NIFTY 500',
-#     'TEAMGTY': 'NIFTY 500',
-#     'LIBERTSHOE': 'NIFTY 500',
-#     'EBGNG': 'NIFTY 500',
-#     'MUTHOOTCAP': 'NIFTY 500',
-#     'ONWARDTEC': 'NIFTY 500',
-#     'WINDMACHIN': 'NIFTY 500',
-#     'PANAMAPET': 'NIFTY 500',
-#     'RITCO': 'NIFTY 500',
-#     'GREENPLY': 'NIFTY 500',
-#     'STYLEBAAZA': 'NIFTY 500',
-#     'HINDWAREAP': 'NIFTY 500',
-#     'INDOBORAX': 'NIFTY 500',
-#     'VALIANTORG': 'NIFTY 500',
-#     'JSWINFRA': 'NIFTY 500',
-#     'CUB': 'NIFTY 500',
-#     'SIMPLEXINF': 'NIFTY 500',
-#     'DYNPRO': 'NIFTY 500',
-#     'BECTORFOOD': 'NIFTY 500',
-#     'SPANDANA': 'NIFTY 500',
-#     'CPEDU': 'NIFTY 500',
-#     'STERTOOLS': 'NIFTY 500',
-#     'STARTECK': 'NIFTY 500',
-#     'MWL': 'NIFTY 500',
-#     'VRLLOG': 'NIFTY 500',
-#     'ORIENTBELL': 'NIFTY 500',
-#     'FINOPB': 'NIFTY 500',
-#     'SRGHFL': 'NIFTY 500',
-#     'QUADFUTURE': 'NIFTY 500',
-#     'ALLTIME': 'NIFTY 500',
-#     'LAXMIDENTL': 'NIFTY 500',
-#     'TIL': 'NIFTY 500',
-#     'LGHL': 'NIFTY 500',
-#     'APEX': 'NIFTY 500',
-#     'AGIIL': 'NIFTY 500',
-#     'SURAJEST': 'NIFTY 500',
-#     'RALLIS': 'NIFTY 500',
-#     'CAMPUS': 'NIFTY 500',
-#     'CAPITALSFB': 'NIFTY 500',
-#     'NAHARCAP': 'NIFTY 500',
-#     'DIAMINESQ': 'NIFTY 500',
-#     'HONASA': 'NIFTY 500',
-#     'CHEMPLASTS': 'NIFTY 500',
-#     'JUNIPER': 'NIFTY 500',
-#     'SURYAROSNI': 'NIFTY 500',
-#     'DMCC': 'NIFTY 500',
-#     'JWL': 'NIFTY 500',
-#     'SURAJLTD': 'NIFTY 500',
-#     'NORTHARC': 'NIFTY 500',
-#     'NAHARPOLY': 'NIFTY 500',
-#     'CANTABIL': 'NIFTY 500',
-#     'CAPACITE': 'NIFTY 500',
-#     'CLSEL': 'NIFTY 500',
-#     'IXIGO': 'NIFTY 500',
-#     'EPACK': 'NIFTY 500',
-#     'VSTIND': 'NIFTY 500',
-#     'PODDARMENT': 'NIFTY 500',
-#     'REFEX': 'NIFTY 500',
-#     'PNCINFRA': 'NIFTY 500',
-#     'BAJAJCON': 'NIFTY 500',
-#     'UTTAMSUGAR': 'NIFTY 500',
-#     'GODAVARIB': 'NIFTY 500',
-#     'HIKAL': 'NIFTY 500',
-#     'PRINCEPIPE': 'NIFTY 500',
-#     'GREENLAM': 'NIFTY 500',
-#     'SUNFLAG': 'NIFTY 500',
-#     'MMP': 'NIFTY 500',
-#     'PPL': 'NIFTY 500',
-#     'DELPHIFX': 'NIFTY 500',
-#     'ASAHISONG': 'NIFTY 500',
-#     'SAHYADRI': 'NIFTY 500',
-#     'AEGISVOPAK': 'NIFTY 500',
-#     'AKSHARCHEM': 'NIFTY 500',
-#     'AWL': 'NIFTY 500',
-#     'PLATIND': 'NIFTY 500',
-#     'KARURVYSYA': 'NIFTY 500',
-#     'HUBTOWN': 'NIFTY 500',
-#     'ZENITHEXPO': 'NIFTY 500',
-#     'NLCINDIA': 'NIFTY 500',
-#     'PURVA': 'NIFTY 500',
-#     'VIKRAMSOLR': 'NIFTY 500',
-#     'INDIANCARD': 'NIFTY 500',
-#     'INDOCO': 'NIFTY 500',
-#     'INDOSTAR': 'NIFTY 500',
-#     'DCI': 'NIFTY 500',
-#     'DBCORP': 'NIFTY 500',
-#     'SESHAPAPER': 'NIFTY 500',
-#     'HERANBA': 'NIFTY 500',
-#     'UNIVPHOTO': 'NIFTY 500',
-#     'VINYLINDIA': 'NIFTY 500',
-#     'GANESHCP': 'NIFTY 500',
-#     'FABTECH': 'NIFTY 500',
-#     'GPIL': 'NIFTY 500',
-#     'SAPPHIRE': 'NIFTY 500',
-#     'GREENPANEL': 'NIFTY 500',
-#     'DHARMAJ': 'NIFTY 500',
-#     'MOBIKWIK': 'NIFTY 500',
-#     'WANBURY': 'NIFTY 500',
-#     'PINELABS': 'NIFTY 500',
-#     'ASPINWALL': 'NIFTY 500',
-#     'VAIBHAVGBL': 'NIFTY 500',
-#     'APOLLO': 'NIFTY 500',
-#     'PRECWIRE': 'NIFTY 500',
-#     'CEIGALL': 'NIFTY 500',
-#     'JNKINDIA': 'NIFTY 500',
-#     'RELIGARE': 'NIFTY 500',
-#     'TIRUMALCHM': 'NIFTY 500',
-#     'KAMATHOTEL': 'NIFTY 500',
-#     'ECOSMOBLTY': 'NIFTY 500',
-#     'EIFFL': 'NIFTY 500',
-#     'BHAGCHEM': 'NIFTY 500',
-#     'TARSONS': 'NIFTY 500',
-#     'ACMESOLAR': 'NIFTY 500',
-#     'RITES': 'NIFTY 500',
-#     'NAZARA': 'NIFTY 500',
-#     'SCI': 'NIFTY 500',
-#     'MHLXMIRU': 'NIFTY 500',
-#     'STANLEY': 'NIFTY 500',
-#     'KANSAINER': 'NIFTY 500',
-#     'ADVENTHTL': 'NIFTY 500',
-#     'SIGNPOST': 'NIFTY 500',
-#     'STARCEMENT': 'NIFTY 500',
-#     'MAZDA': 'NIFTY 500',
-#     'ALPHAGEO': 'NIFTY 500',
-#     'KABRAEXTRU': 'NIFTY 500',
-#     'DCAL': 'NIFTY 500',
-#     'SREEL': 'NIFTY 500',
-#     'PPAP': 'NIFTY 500',
-#     'SWSOLAR': 'NIFTY 500',
-#     'NIRAJISPAT': 'NIFTY 500',
-#     'RUBYMILLS': 'NIFTY 500',
-#     'DEEDEV': 'NIFTY 500',
-#     'BLSE': 'NIFTY 500',
-#     'EPL': 'NIFTY 500',
-#     'SANDUMA': 'NIFTY 500',
-#     'SULA': 'NIFTY 500',
-#     'LOYALTEX': 'NIFTY 500',
-#     'SAGCEM': 'NIFTY 500',
-#     'HUHTAMAKI': 'NIFTY 500',
-#     'DAMCAPITAL': 'NIFTY 500',
-#     'STEELCAS': 'NIFTY 500',
-#     'ADFFOODS': 'NIFTY 500',
-#     'UNIDT': 'NIFTY 500',
-#     'AFFORDABLE': 'NIFTY 500',
-#     'SEQUENT': 'NIFTY 500',
-#     'QUESS': 'NIFTY 500',
-#     'IFGLEXPOR': 'NIFTY 500',
-#     'PATELRMART': 'NIFTY 500',
-#     'JAYKAY': 'NIFTY 500',
-#     'MOSCHIP': 'NIFTY 500',
-#     'KNAGRI': 'NIFTY 500',
-#     'LAOPALA': 'NIFTY 500',
-#     'BLAL': 'NIFTY 500',
-#     'UTLSOLAR': 'NIFTY 500',
-#     'JAYAGROGN': 'NIFTY 500',
-#     'ARVEE': 'NIFTY 500',
-#     'INOXGREEN': 'NIFTY 500',
-#     'MARINE': 'NIFTY 500',
-#     'GARUDA': 'NIFTY 500',
-#     'JAGSNPHARM': 'NIFTY 500',
-#     'KTKBANK': 'NIFTY 500',
-#     'CHEMCON': 'NIFTY 500',
-#     'AFSL': 'NIFTY 500',
-#     'PENIND': 'NIFTY 500',
-#     'PFOCUS': 'NIFTY 500',
-#     'EIEL': 'NIFTY 500',
-#     'RHL': 'NIFTY 500',
-#     'PACEDIGITK': 'NIFTY 500',
-#     'NAHARSPING': 'NIFTY 500',
-#     'KANPRPLA': 'NIFTY 500',
-#     'GLOBALVECT': 'NIFTY 500',
-#     'NCLIND': 'NIFTY 500',
-#     'BBTCL': 'NIFTY 500',
-#     'MINDTECK': 'NIFTY 500',
-#     'NITIRAJ': 'NIFTY 500',
-#     'SHRINGARMS': 'NIFTY 500',
-#     'DPWIRES': 'NIFTY 500',
-#     'GOKULAGRO': 'NIFTY 500',
-#     'KITEX': 'NIFTY 500',
-#     'RESPONIND': 'NIFTY 500',
-#     'INDIQUBE': 'NIFTY 500',
-#     'SHANTIGOLD': 'NIFTY 500',
-#     'MARKSANS': 'NIFTY 500',
-#     'EMMVEE': 'NIFTY 500',
-#     'ITCHOTELS': 'NIFTY 500',
-#     'SHALBY': 'NIFTY 500',
-#     'ENGINERSIN': 'NIFTY 500',
-#     'RAJESHEXPO': 'NIFTY 500',
-#     'MAXIND': 'NIFTY 500',
-#     'INDOFARM': 'NIFTY 500',
-#     '20MICRONS': 'NIFTY 500',
-#     'SAKSOFT': 'NIFTY 500',
-#     'VERANDA': 'NIFTY 500',
-#     'NATCAPSUQ': 'NIFTY 500',
-#     'SSWL': 'NIFTY 500',
-#     'GPPL': 'NIFTY 500',
-#     'TIMETECHNO': 'NIFTY 500',
-#     'PRABHA': 'NIFTY 500',
-#     'CORDSCABLE': 'NIFTY 500',
-#     'ORBTEXP': 'NIFTY 500',
-#     'LIKHITHA': 'NIFTY 500',
-#     'CGCL': 'NIFTY 500',
-#     'CASTROLIND': 'NIFTY 500',
-#     'AARON': 'NIFTY 500',
-#     'MVGJL': 'NIFTY 500',
-#     'UFBL': 'NIFTY 500',
-#     'GREAVESCOT': 'NIFTY 500',
-#     'EUROBOND': 'NIFTY 500',
-#     'SHREYANIND': 'NIFTY 500',
-#     'KCP': 'NIFTY 500',
-#     'LFIC': 'NIFTY 500',
-#     'TRANSWORLD': 'NIFTY 500',
-#     'ORIENTELEC': 'NIFTY 500',
-#     'SAMHI': 'NIFTY 500',
-#     'PROSTARM': 'NIFTY 500',
-#     'BHARATWIRE': 'NIFTY 500',
-#     'BHARATSE': 'NIFTY 500',
-#     'BALMLAWRIE': 'NIFTY 500',
-#     'KROSS': 'NIFTY 500',
-#     'IKIO': 'NIFTY 500',
-#     'BHAGERIA': 'NIFTY 500',
-#     'YATRA': 'NIFTY 500',
-#     'AEROFLEX': 'NIFTY 500',
-#     'SHIVATEX': 'NIFTY 500',
-#     'WALCHANNAG': 'NIFTY 500',
-#     'HEIDELBERG': 'NIFTY 500',
-#     'MUTHOOTMF': 'NIFTY 500',
-#     'AURUM': 'NIFTY 500',
-#     'AMNPLST': 'NIFTY 500',
-#     'MANCREDIT': 'NIFTY 500',
-#     'LORDSCHLO': 'NIFTY 500',
-#     'SPMLINFRA': 'NIFTY 500',
-#     'LOKESHMACH': 'NIFTY 500',
-#     'SHAREINDIA': 'NIFTY 500',
-#     'UDS': 'NIFTY 500',
-#     'GSFC': 'NIFTY 500',
-#     'NIACL': 'NIFTY 500',
-#     'IITL': 'NIFTY 500',
-#     'WEL': 'NIFTY 500',
-#     'DCBBANK': 'NIFTY 500',
-#     'KHADIM': 'NIFTY 500',
-#     'UGROCAP': 'NIFTY 500',
-#     'LXCHEM': 'NIFTY 500',
-#     'SUVEN': 'NIFTY 500',
-#     'ELIN': 'NIFTY 500',
-#     'MARKOLINES': 'NIFTY 500',
-#     'IPL': 'NIFTY 500',
-#     'HITECHCORP': 'NIFTY 500',
-#     'PYRAMID': 'NIFTY 500',
-#     'SHK': 'NIFTY 500',
-#     'HEXATRADEX': 'NIFTY 500',
-#     'BAJEL': 'NIFTY 500',
-#     'CONSOFINVT': 'NIFTY 500',
-#     'FINPIPE': 'NIFTY 500',
-#     'ORIENTCEM': 'NIFTY 500',
-#     'AVG': 'NIFTY 500',
-#     'RELTD': 'NIFTY 500',
-#     'ASHOKA': 'NIFTY 500',
-#     'VINCOFE': 'NIFTY 500',
-#     'MEESHO': 'NIFTY 500',
-#     'URAVIDEF': 'NIFTY 500',
-#     'CHEMBOND': 'NIFTY 500',
-#     'TBZ': 'NIFTY 500',
-#     'DCMSRIND': 'NIFTY 500',
-#     'CAMLINFINE': 'NIFTY 500',
-#     'PLASTIBLEN': 'NIFTY 500',
-#     'LEMONTREE': 'NIFTY 500',
-#     'RUPA': 'NIFTY 500',
-#     'BSL': 'NIFTY 500',
-#     'DCXINDIA': 'NIFTY 500',
-#     'DTIL': 'NIFTY 500',
-#     'GICHSGFIN': 'NIFTY 500',
-#     'HARRMALAYA': 'NIFTY 500',
-#     'AYMSYNTEX': 'NIFTY 500',
-#     'JINDALSAW': 'NIFTY 500',
-#     'STARPAPER': 'NIFTY 500',
-#     'SCHAND': 'NIFTY 500',
-#     'CHEMBONDCH': 'NIFTY 500',
-#     'MOLDTECH': 'NIFTY 500',
-#     'SYSTMTXC': 'NIFTY 500',
-#     'TAINWALCHM': 'NIFTY 500',
-#     'BELRISE': 'NIFTY 500',
-#     'RATNAVEER': 'NIFTY 500',
-#     'NOCIL': 'NIFTY 500',
-#     'FUSION': 'NIFTY 500',
-#     'HISARMETAL': 'NIFTY 500',
-#     'HERCULES': 'NIFTY 500',
-#     'GKENERGY': 'NIFTY 500',
-#     'ADSL': 'NIFTY 500',
-#     'SCODATUBES': 'NIFTY 500',
-#     'IRCON': 'NIFTY 500',
-#     'SGLTL': 'NIFTY 500',
-#     'LOTUSDEV': 'NIFTY 500',
-#     'RAMAPHO': 'NIFTY 500',
-#     'MAANALU': 'NIFTY 500',
-#     'PARADEEP': 'NIFTY 500',
-#     'PTC': 'NIFTY 500',
-#     'PRECAM': 'NIFTY 500',
-#     'WIPL': 'NIFTY 500',
-#     'RSWM': 'NIFTY 500',
-#     'NATHBIOGEN': 'NIFTY 500',
-#     'AVANTEL': 'NIFTY 500',
-#     'HINDOILEXP': 'NIFTY 500',
-#     'KALAMANDIR': 'NIFTY 500',
-#     'VGL': 'NIFTY 500',
-#     'SAMMAANCAP': 'NIFTY 500',
-#     'MRPL': 'NIFTY 500',
-#     'RACE': 'NIFTY 500',
-#     'BIRLAMONEY': 'NIFTY 500',
-#     'SUKHJITS': 'NIFTY 500',
-#     'GIPCL': 'NIFTY 500',
-#     'IVP': 'NIFTY 500',
-#     'SUPERHOUSE': 'NIFTY 500',
-#     'AEQUS': 'NIFTY 500',
-#     'JMFINANCIL': 'NIFTY 500',
-#     'TARC': 'NIFTY 500',
-#     'KNRCON': 'NIFTY 500',
-#     'GROWW': 'NIFTY 500',
-#     'JOCIL': 'NIFTY 500',
-#     'ADANIPOWER': 'NIFTY 500',
-#     'BLISSGVS': 'NIFTY 500',
-#     'SATIN': 'NIFTY 500',
-#     'JTEKTINDIA': 'NIFTY 500',
-#     'ARKADE': 'NIFTY 500',
-#     'TNPL': 'NIFTY 500',
-#     'FEDFINA': 'NIFTY 500',
-#     'GANGESSECU': 'NIFTY 500',
-#     'KRONOX': 'NIFTY 500',
-#     'WORTHPERI': 'NIFTY 500',
-#     'GEMAROMA': 'NIFTY 500',
-#     'NAVNETEDUL': 'NIFTY 500',
-#     'RBZJEWEL': 'NIFTY 500',
-#     'DIACABS': 'NIFTY 500',
-#     'MODISONLTD': 'NIFTY 500',
-#     'DIGITIDE': 'NIFTY 500',
-#     'GPTHEALTH': 'NIFTY 500',
-#     'THOMASCOOK': 'NIFTY 500',
-#     'MANBA': 'NIFTY 500',
-#     'RCF': 'NIFTY 500',
-#     'RELCHEMQ': 'NIFTY 500',
-#     'CROWN': 'NIFTY 500',
-#     'WELSPUNLIV': 'NIFTY 500',
-#     'UNIENTER': 'NIFTY 500',
-#     'SURYODAY': 'NIFTY 500',
-#     'MUKANDLTD': 'NIFTY 500',
-#     'SPARC': 'NIFTY 500',
-#     'GULPOLY': 'NIFTY 500',
-#     'MONEYBOXX': 'NIFTY 500',
-#     'PWL': 'NIFTY 500',
-#     'MANAKCOAT': 'NIFTY 500',
-#     'TVTODAY': 'NIFTY 500',
-#     'VMM': 'NIFTY 500',
-#     'PRAKASH': 'NIFTY 500',
-#     'HEMIPROP': 'NIFTY 500',
-#     'DEVYANI': 'NIFTY 500',
-#     'PIGL': 'NIFTY 500',
-#     'TOLINS': 'NIFTY 500',
-#     'AHLEAST': 'NIFTY 500',
-#     'KAKATCEM': 'NIFTY 500',
-#     'BIRLACABLE': 'NIFTY 500',
-#     'ROLEXRINGS': 'NIFTY 500',
-#     'SMARTLINK': 'NIFTY 500',
-#     'SOMICONVEY': 'NIFTY 500',
-#     'HPIL': 'NIFTY 500',
-#     'PARKHOTELS': 'NIFTY 500',
-#     'LAXMIINDIA': 'NIFTY 500',
-#     'BOMDYEING': 'NIFTY 500',
-#     'MANINFRA': 'NIFTY 500',
-#     'DHAMPURSUG': 'NIFTY 500',
-#     'KOPRAN': 'NIFTY 500',
-#     'PRSMJOHNSN': 'NIFTY 500',
-#     'RGL': 'NIFTY 500',
-#     'BANARBEADS': 'NIFTY 500',
-#     'JAICORPLTD': 'NIFTY 500',
-#     'AGRITECH': 'NIFTY 500',
-#     'LOTUSEYE': 'NIFTY 500',
-#     'DCMNVL': 'NIFTY 500',
-#     'URBANCO': 'NIFTY 500',
-#     'HECPROJECT': 'NIFTY 500',
-#     'ABLBL': 'NIFTY 500',
-#     'INDOUS': 'NIFTY 500',
-#     'VSTL': 'NIFTY 500',
-#     'MAHEPC': 'NIFTY 500',
-#     'KOTHARIPET': 'NIFTY 500',
-#     'TEXRAIL': 'NIFTY 500',
-#     'BOROSCI': 'NIFTY 500',
-#     'ARISINFRA': 'NIFTY 500',
-#     'JAMNAAUTO': 'NIFTY 500',
-#     'GANDHAR': 'NIFTY 500',
-#     'LAMBODHARA': 'NIFTY 500',
-#     'MUNJALSHOW': 'NIFTY 500',
-#     'REDTAPE': 'NIFTY 500',
-#     'PVSL': 'NIFTY 500',
-#     'VRAJ': 'NIFTY 500',
-#     'APCL': 'NIFTY 500',
-#     'STCINDIA': 'NIFTY 500',
-#     'AARVI': 'NIFTY 500',
-#     'CANHLIFE': 'NIFTY 500',
-#     'RNBDENIMS': 'NIFTY 500',
-#     'ADVANCE': 'NIFTY 500',
-#     'WCIL': 'NIFTY 500',
-#     'JSWCEMENT': 'NIFTY 500',
-#     'REPL': 'NIFTY 500',
-#     'RUCHIRA': 'NIFTY 500',
-#     'MASTERTR': 'NIFTY 500',
-#     'DBREALTY': 'NIFTY 500',
-#     'UNIECOM': 'NIFTY 500',
-#     'DBEIL': 'NIFTY 500',
-#     'EKC': 'NIFTY 500',
-#     'INDOAMIN': 'NIFTY 500',
-#     'RICOAUTO': 'NIFTY 500',
-#     'REMSONSIND': 'NIFTY 500',
-#     'GAEL': 'NIFTY 500',
-#     'SECMARK': 'NIFTY 500',
-#     'HIMATSEIDE': 'NIFTY 500',
-#     'SPECIALITY': 'NIFTY 500',
-#     'THEINVEST': 'NIFTY 500',
-#     'UCAL': 'NIFTY 500',
-#     'GMRP&UI': 'NIFTY 500',
-#     'ENIL': 'NIFTY 500',
-#     'AVROIND': 'NIFTY 500',
-#     'CPCAP': 'NIFTY 500',
-#     'BANSWRAS': 'NIFTY 500',
-#     'RKSWAMY': 'NIFTY 500',
-#     'SHANKARA': 'NIFTY 500',
-#     'TOKYOPLAST': 'NIFTY 500',
-#     'LINC': 'NIFTY 500',
-#     'DREAMFOLKS': 'NIFTY 500',
-#     'EXICOM': 'NIFTY 500',
-#     'MUFIN': 'NIFTY 500',
-#     'EMIL': 'NIFTY 500',
-#     'TVSSCS': 'NIFTY 500',
-#     'NELCAST': 'NIFTY 500',
-#     'AUSOMENT': 'NIFTY 500',
-#     'NAHARINDUS': 'NIFTY 500',
-#     'SHEMAROO': 'NIFTY 500',
-#     'PALASHSECU': 'NIFTY 500',
-#     'BALAJITELE': 'NIFTY 500',
-#     'JKIPL': 'NIFTY 500',
-#     'VETO': 'NIFTY 500',
-#     'SDBL': 'NIFTY 500',
-#     'ESTER': 'NIFTY 500',
-#     'RAIN': 'NIFTY 500',
-#     'GILLANDERS': 'NIFTY 500',
-#     'ORIENTHOT': 'NIFTY 500',
-#     'MENONBE': 'NIFTY 500',
-#     'TEXINFRA': 'NIFTY 500',
-#     'SINTERCOM': 'NIFTY 500',
-#     'AMANTA': 'NIFTY 500',
-#     'SBFC': 'NIFTY 500',
-#     'PAKKA': 'NIFTY 500',
-#     'TNPETRO': 'NIFTY 500',
-#     'TOUCHWOOD': 'NIFTY 500',
-#     'AIROLAM': 'NIFTY 500',
-#     'EDELWEISS': 'NIFTY 500',
-#     'GPTINFRA': 'NIFTY 500',
-#     'THEMISMED': 'NIFTY 500',
-#     'MODIRUBBER': 'NIFTY 500',
-#     'OMINFRAL': 'NIFTY 500',
-#     'J&KBANK': 'NIFTY 500',
-#     'RPPINFRA': 'NIFTY 500',
-#     'ALEMBICLTD': 'NIFTY 500',
-#     'KECL': 'NIFTY 500',
-#     'BEDMUTHA': 'NIFTY 500',
-#     'STLTECH': 'NIFTY 500',
-#     'GTPL': 'NIFTY 500',
-#     'WEIZMANIND': 'NIFTY 500',
-#     'FINKURVE': 'NIFTY 500',
-#     'IDBI': 'NIFTY 500',
-#     'ISFT': 'NIFTY 500',
-#     'OMAXAUTO': 'NIFTY 500',
-#     'DONEAR': 'NIFTY 500',
-#     'PDMJEPAPER': 'NIFTY 500',
-#     'EXCELSOFT': 'NIFTY 500',
-#     'BSHSL': 'NIFTY 500',
-#     'KHAITANLTD': 'NIFTY 500',
-#     'BROOKS': 'NIFTY 500',
-#     'MUFTI': 'NIFTY 500',
-#     'INDSWFTLAB': 'NIFTY 500',
-#     'SMLT': 'NIFTY 500',
-#     'APTECHT': 'NIFTY 500',
-#     'STEELCITY': 'NIFTY 500',
-#     'EMMBI': 'NIFTY 500',
-#     'BAJAJHFL': 'NIFTY 500',
-#     'MAHAPEXLTD': 'NIFTY 500',
-#     'CUBEXTUB': 'NIFTY 500',
-#     'SAMBHV': 'NIFTY 500',
-#     'OCCLLTD': 'NIFTY 500',
-#     'NAVKARCORP': 'NIFTY 500',
-#     'ARIHANTCAP': 'NIFTY 500',
-#     'INTLCONV': 'NIFTY 500',
-#     'ZEEL': 'NIFTY 500',
-#     'VIKRAN': 'NIFTY 500',
-#     'SANSTAR': 'NIFTY 500',
-#     'ATLASCYCLE': 'NIFTY 500',
-#     'ARCHIDPLY': 'NIFTY 500',
-#     'DCM': 'NIFTY 500',
-#     'PAR': 'NIFTY 500',
-#     'HITECH': 'NIFTY 500',
-#     'NTPCGREEN': 'NIFTY 500',
-#     'KUANTUM': 'NIFTY 500',
-#     'NITCO': 'NIFTY 500',
-#     'KOKUYOCMLN': 'NIFTY 500',
-#     'WEBELSOLAR': 'NIFTY 500',
-#     'NDLVENTURE': 'NIFTY 500',
-#     'SPORTKING': 'NIFTY 500',
-#     'BEPL': 'NIFTY 500',
-#     'EMAMIPAP': 'NIFTY 500',
-#     'SHREDIGCEM': 'NIFTY 500',
-#     'OMFREIGHT': 'NIFTY 500',
-#     'JAYBARMARU': 'NIFTY 500',
-#     'INSPIRISYS': 'NIFTY 500',
-#     'NIITLTD': 'NIFTY 500',
-#     'JAYSREETEA': 'NIFTY 500',
-#     'KRITI': 'NIFTY 500',
-#     'ZODIACLOTH': 'NIFTY 500',
-#     'AERONEU': 'NIFTY 500',
-#     'SAURASHCEM': 'NIFTY 500',
-#     'NFL': 'NIFTY 500',
-#     'DOLATALGO': 'NIFTY 500',
-#     'EMAMIREAL': 'NIFTY 500',
-#     'SARLAPOLY': 'NIFTY 500',
-#     'CINELINE': 'NIFTY 500',
-#     'SHRIRAMPPS': 'NIFTY 500',
-#     'SMCGLOBAL': 'NIFTY 500',
-#     'IGCL': 'NIFTY 500',
-#     'MAWANASUG': 'NIFTY 500',
-#     'WSI': 'NIFTY 500',
-#     'SINCLAIR': 'NIFTY 500',
-#     'IOLCP': 'NIFTY 500',
-#     'SERVOTECH': 'NIFTY 500',
-#     'KHAICHEM': 'NIFTY 500',
-#     'LOVABLE': 'NIFTY 500',
-#     'CLEDUCATE': 'NIFTY 500',
-#     'XCHANGING': 'NIFTY 500',
-#     'NDTV': 'NIFTY 500',
-#     'ALKALI': 'NIFTY 500',
-#     'FOCUS': 'NIFTY 500',
-#     'ATAM': 'NIFTY 500',
-#     'SUPREME': 'NIFTY 500',
-#     'SSDL': 'NIFTY 500',
-#     'SPIC': 'NIFTY 500',
-#     'ALPA': 'NIFTY 500',
-#     'TOTAL': 'NIFTY 500',
-#     'AEROENTER': 'NIFTY 500',
-#     'DBOL': 'NIFTY 500',
-#     'RMDRIP': 'NIFTY 500',
-#     'PNBGILTS': 'NIFTY 500',
-#     'ANUHPHR': 'NIFTY 500',
-#     'MUNJALAU': 'NIFTY 500',
-#     'GANESHBE': 'NIFTY 500',
-#     'ADL': 'NIFTY 500',
-#     'JMA': 'NIFTY 500',
-#     'LYKALABS': 'NIFTY 500',
-#     'UFO': 'NIFTY 500',
-#     'ORIENTLTD': 'NIFTY 500',
-#     'ANDHRSUGAR': 'NIFTY 500',
-#     'KANORICHEM': 'NIFTY 500',
-#     'TARACHAND': 'NIFTY 500',
-#     'NIVABUPA': 'NIFTY 500',
-#     'VERTOZ': 'NIFTY 500',
-#     'RUBFILA': 'NIFTY 500',
-#     'AUTOIND': 'NIFTY 500',
-#     'RADHIKAJWE': 'NIFTY 500',
-#     'BALPHARMA': 'NIFTY 500',
-#     'FOODSIN': 'NIFTY 500',
-#     'ACL': 'NIFTY 500',
-#     'ZIMLAB': 'NIFTY 500',
-#     'BRIGHOTEL': 'NIFTY 500',
-#     'MADRASFERT': 'NIFTY 500',
-#     'VPRPL': 'NIFTY 500',
-#     'JAYNECOIND': 'NIFTY 500',
-#     'KOTHARIPRO': 'NIFTY 500',
-#     'EMBDL': 'NIFTY 500',
-#     'GHCLTEXTIL': 'NIFTY 500',
-#     'REGAAL': 'NIFTY 500',
-#     'SILGO': 'NIFTY 500',
-#     'DELTAMAGNT': 'NIFTY 500',
-#     'ELECTCAST': 'NIFTY 500',
-#     'DELTACORP': 'NIFTY 500',
-#     'JAGRAN': 'NIFTY 500',
-#     'GEOJITFSL': 'NIFTY 500',
-#     'TRIGYN': 'NIFTY 500',
-#     'SUMIT': 'NIFTY 500',
-#     'SHAHALLOYS': 'NIFTY 500',
-#     'MITCON': 'NIFTY 500',
-#     'KREBSBIO': 'NIFTY 500',
-#     'BLUSPRING': 'NIFTY 500',
-#     'LAGNAM': 'NIFTY 500',
-#     'RBA': 'NIFTY 500',
-#     'ANDHRAPAP': 'NIFTY 500',
-#     'SATIA': 'NIFTY 500',
-#     'VALIANTLAB': 'NIFTY 500',
-#     'AVTNPL': 'NIFTY 500',
-#     'TPLPLASTEH': 'NIFTY 500',
-#     'TFCILTD': 'NIFTY 500',
-#     'VISAKAIND': 'NIFTY 500',
-#     'BIGBLOC': 'NIFTY 500',
-#     'HMVL': 'NIFTY 500',
-#     'UNIVASTU': 'NIFTY 500',
-#     'ISHANCH': 'NIFTY 500',
-#     'BANKA': 'NIFTY 500',
-#     'NKIND': 'NIFTY 500',
-#     'OILCOUNTUB': 'NIFTY 500',
-#     'HGM': 'NIFTY 500',
-#     'OMAXE': 'NIFTY 500',
-#     'KRITINUT': 'NIFTY 500',
-#     'MOL': 'NIFTY 500',
-#     'ASIANTILES': 'NIFTY 500',
-#     'RAJOOENG': 'NIFTY 500',
-#     'SANGHIIND': 'NIFTY 500',
-#     'MANAKSIA': 'NIFTY 500',
-#     'GLOBECIVIL': 'NIFTY 500',
-#     'MUKTAARTS': 'NIFTY 500',
-#     'ROTO': 'NIFTY 500',
-#     'SHIVAMILLS': 'NIFTY 500',
-#     'HILINFRA': 'NIFTY 500',
-#     'MANALIPETC': 'NIFTY 500',
-#     'JTLIND': 'NIFTY 500',
-#     'JAIBALAJI': 'NIFTY 500',
-#     'DCW': 'NIFTY 500',
-#     'NRL': 'NIFTY 500',
-#     'GATEWAY': 'NIFTY 500',
-#     'GLOTTIS': 'NIFTY 500',
-#     'BMWVENTLTD': 'NIFTY 500',
-#     'SHALPAINTS': 'NIFTY 500',
-#     'SRD': 'NIFTY 500',
-#     'DJML': 'NIFTY 500',
-#     'OSWALAGRO': 'NIFTY 500',
-#     'GFLLIMITED': 'NIFTY 500',
-#     'EQUITASBNK': 'NIFTY 500',
-#     'VASWANI': 'NIFTY 500',
-#     'SURYALAXMI': 'NIFTY 500',
-#     'ADVANIHOTR': 'NIFTY 500',
-#     'LLOYDSENT': 'NIFTY 500',
-#     'PRITI': 'NIFTY 500',
-#     'RSSOFTWARE': 'NIFTY 500',
-#     'MANAKSTEEL': 'NIFTY 500',
-#     'BPL': 'NIFTY 500',
-#     'MAHABANK': 'NIFTY 500',
-#     'ONMOBILE': 'NIFTY 500',
-#     'SIGIND': 'NIFTY 500',
-#     'OBCL': 'NIFTY 500',
-#     'MMTC': 'NIFTY 500',
-#     'ANIKINDS': 'NIFTY 500',
-#     'RKEC': 'NIFTY 500',
-#     'ROSSELLIND': 'NIFTY 500',
-#     'VMSTMT': 'NIFTY 500',
-#     'UJJIVANSFB': 'NIFTY 500',
-#     'FILATEX': 'NIFTY 500',
-#     'ELGIRUBCO': 'NIFTY 500',
-#     'RADIANTCMS': 'NIFTY 500',
-#     'BODALCHEM': 'NIFTY 500',
-#     'PASUPTAC': 'NIFTY 500',
-#     'BYKE': 'NIFTY 500',
-#     'GOLDTECH': 'NIFTY 500',
-#     'LLOYDSENGG': 'NIFTY 500',
-#     'ONEPOINT': 'NIFTY 500',
-#     'KARMAENG': 'NIFTY 500',
-#     'TARMAT': 'NIFTY 500',
-#     'VIDYAWIRES': 'NIFTY 500',
-#     'MEDICO': 'NIFTY 500',
-#     'BLKASHYAP': 'NIFTY 500',
-#     'AMJLAND': 'NIFTY 500',
-#     'AHLADA': 'NIFTY 500',
-#     'AMDIND': 'NIFTY 500',
-#     'ROML': 'NIFTY 500',
-#     'TEXMOPIPES': 'NIFTY 500'
-# }
-
-# # --- CONSOLIDATED RAM STATE ---
-# RAM_STATE: Dict = {
-#     "main_loop": None,
-#     "tick_queue": None,          # ✅ new: tick queue
-#     "tick_worker_task": None,    # ✅ new: worker task handle
-#     "kite": None,
-#     "kws": None,
-#     "api_key": "",
-#     "api_secret": "",
-#     "access_token": "",
-#     "stocks": {},
-#     "trades": {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]},
-#     "config": {
-#         side: {
-#             "volume_criteria": [
-#                 {"min_vol_price_cr": 0, "sma_multiplier": 1.0, "min_sma_avg": 0}
-#                 for _ in range(10)
-#             ],
-#             "total_trades": 10,
-#             "risk_trade_1": 20,
-#             "risk_reward": "1:2",
-#             "trailing_sl": "1:1.5",
-#         }
-#         for side in ["bull", "bear", "mom_bull", "mom_bear"]
-#     },
-#     "engine_live": {side: False for side in ["bull", "bear", "mom_bull", "mom_bear"]},
-#     "pnl": {"total": 0.0, "bull": 0.0, "bear": 0.0, "mom_bull": 0.0, "mom_bear": 0.0},
-#     "data_connected": {"breakout": False, "momentum": False},
-#     "manual_exits": set(),
-# }
-
-# # ----------------------------
-# # ✅ FIX: Queue-based tick processing
-# # ----------------------------
-
-# async def tick_worker():
-#     """
-#     Single consumer of all ticks.
-#     Prevents event-loop backlog (no run_coroutine_threadsafe per tick),
-#     and keeps all RAM_STATE mutations inside the event loop (thread-safe).
-#     """
-#     q: asyncio.Queue = RAM_STATE["tick_queue"]
-#     logger.info("🧵 tick_worker running")
-
-#     while True:
-#         ticks = await q.get()
-#         try:
-#             for tick in ticks:
-#                 token = tick.get("instrument_token")
-#                 if token not in RAM_STATE["stocks"]:
-#                     continue
-
-#                 ltp = tick.get("last_price", 0.0)
-#                 vol = tick.get("volume_traded", 0)
-
-#                 # Update RAM inside event loop only
-#                 RAM_STATE["stocks"][token]["ltp"] = ltp
-
-#                 # Gate engines to reduce load
-#                 if RAM_STATE["engine_live"].get("bull") or RAM_STATE["engine_live"].get("bear"):
-#                     await BreakoutEngine.run(token, ltp, vol, RAM_STATE)
-
-#                 if RAM_STATE["engine_live"].get("mom_bull") or RAM_STATE["engine_live"].get("mom_bear"):
-#                     await MomentumEngine.run(token, ltp, vol, RAM_STATE)
-
-#         except Exception:
-#             logger.exception("❌ tick_worker crashed while processing ticks")
-#         finally:
-#             q.task_done()
-
-
-# def on_ticks(ws, ticks):
-#     """
-#     Called from KiteTicker background thread.
-#     ✅ FIX: only enqueue ticks (no scheduling 2 coroutines per tick).
-#     """
-#     global TICK_STATS
-#     loop = RAM_STATE.get("main_loop")
-#     q = RAM_STATE.get("tick_queue")
-#     if not loop or not q:
-#         return
-
-#     # Heartbeat stats
-#     try:
-#         TICK_STATS["received"] += len(ticks)
-#         if TICK_STATS["received"] >= 500:
-#             logger.info(f"💓 HEARTBEAT: {TICK_STATS['received']} ticks processed (batch-enqueued).")
-#             TICK_STATS["received"] = 0
-#     except Exception:
-#         # never crash on stats
-#         pass
-
-#     def _put():
-#         try:
-#             q.put_nowait(ticks)
-#         except asyncio.QueueFull:
-#             # Drop one batch and keep latest (better to be fresh than slow)
-#             try:
-#                 q.get_nowait()
-#             except Exception:
-#                 pass
-#             try:
-#                 q.put_nowait(ticks)
-#             except Exception:
-#                 pass
-
-#     # Thread-safe handoff into event loop
-#     loop.call_soon_threadsafe(_put)
-
-
-# def on_connect(ws, response):
-#     logger.info("✅ TICKER: Handshake successful. Subscribing to tokens...")
-#     tokens = list(RAM_STATE["stocks"].keys())
-#     if tokens:
-#         ws.subscribe(tokens)
-#         ws.set_mode(ws.MODE_FULL, tokens)
-#         logger.info(f"✅ TICKER: Subscribed to {len(tokens)} stocks.")
-#     RAM_STATE["data_connected"]["breakout"] = True
-#     RAM_STATE["data_connected"]["momentum"] = True
-
-
-# def on_error(ws, code, reason):
-#     logger.error(f"❌ TICKER ERROR: {code} - {reason}")
-
-
-# def on_close(ws, code, reason):
-#     logger.warning(f"⚠️ TICKER: Connection closed ({code}: {reason})")
-#     RAM_STATE["data_connected"]["breakout"] = False
-#     RAM_STATE["data_connected"]["momentum"] = False
-
-
-# # --- SYSTEM LIFECYCLE: STARTUP ---
-
-# @app.on_event("startup")
-# async def startup_event():
-#     logger.info("--- 🚀 NEXUS ASYNC ENGINE BOOTING ---")
-#     RAM_STATE["main_loop"] = asyncio.get_running_loop()
-
-#     # ✅ start tick queue + worker
-#     RAM_STATE["tick_queue"] = asyncio.Queue(maxsize=2000)
-#     RAM_STATE["tick_worker_task"] = asyncio.create_task(tick_worker())
-
-#     # 1. Restore API Credentials from Redis or Env
-#     key_redis, sec_redis = await TradeControl.get_config()
-#     api_key = key_redis or os.getenv("KITE_API_KEY", "")
-#     api_secret = sec_redis or os.getenv("KITE_API_SECRET", "")
-
-#     if api_key and api_secret:
-#         RAM_STATE["api_key"] = str(api_key)
-#         RAM_STATE["api_secret"] = str(api_secret)
-#         logger.info(f"🔑 REDIS: API Credentials Restored ({RAM_STATE['api_key'][:4]}***)")
-
-#     # 2. Restore Session
-#     token = await TradeControl.get_access_token()
-#     if token and RAM_STATE["api_key"]:
-#         try:
-#             RAM_STATE["access_token"] = str(token)
-#             RAM_STATE["kite"] = KiteConnect(api_key=RAM_STATE["api_key"])
-#             RAM_STATE["kite"].set_access_token(RAM_STATE["access_token"])
-
-#             # 3. Map Instruments (blocking call in thread)
-#             logger.info("📡 KITE: Mapping NSE Instruments...")
-#             instruments = await asyncio.to_thread(RAM_STATE["kite"].instruments, "NSE")
-
-#             for instr in instruments:
-#                 symbol = instr["tradingsymbol"]
-#                 if symbol in STOCK_INDEX_MAPPING:
-#                     t_id = instr["instrument_token"]
-#                     RAM_STATE["stocks"][t_id] = {
-#                         "symbol": symbol,
-#                         "ltp": 0,
-#                         "status": "WAITING",
-#                         "trades": 0,
-#                         "hi": 0,
-#                         "lo": 0,
-#                         "pdh": 0,
-#                         "pdl": 0,
-#                         "sma": 0,
-#                         # ✅ Keep old candle fields for compatibility,
-#                         # but engines should use brk_* and mom_* keys after your engine patch.
-#                         "candle": None,
-#                         "last_vol": 0,
-#                         # ✅ new separated candle state (recommended)
-#                         "brk_candle": None,
-#                         "brk_last_vol": 0,
-#                         "mom_candle": None,
-#                         "mom_last_vol": 0,
-#                     }
-
-#             # 4. Hydrate Stock SMA/PDH from Redis Cache
-#             cached_data = await TradeControl.get_all_market_data()
-#             if cached_data:
-#                 logger.info(f"⚡ CACHE: Hydrating {len(cached_data)} stocks from market cache.")
-#                 for t_id_str, data in cached_data.items():
-#                     try:
-#                         t_id = int(t_id_str)
-#                     except Exception:
-#                         continue
-#                     if t_id in RAM_STATE["stocks"]:
-#                         RAM_STATE["stocks"][t_id].update(data)
-
-#             # 5. Start Ticker
-#             RAM_STATE["kws"] = KiteTicker(RAM_STATE["api_key"], RAM_STATE["access_token"])
-#             RAM_STATE["kws"].on_ticks = on_ticks
-#             RAM_STATE["kws"].on_connect = on_connect
-#             RAM_STATE["kws"].on_error = on_error
-#             RAM_STATE["kws"].on_close = on_close
-#             RAM_STATE["kws"].connect(threaded=True)
-#             logger.info("🛰️ SYSTEM: Ticker initialized in background thread (Queue-based).")
-
-#         except Exception as e:
-#             logger.exception(f"❌ STARTUP ERROR: {e}")
-
-
-# # --- WEB & API ENDPOINTS ---
-
-# @app.get("/", response_class=HTMLResponse)
-# async def get_dashboard():
-#     try:
-#         with open("index.html", "r") as f:
-#             return f.read()
-#     except Exception:
-#         return "Dashboard index.html not found."
-
-
-# @app.get("/api/stats")
-# async def get_stats():
-#     total_pnl = 0.0
-#     engine_stats = {}
-#     for side in ["bull", "bear", "mom_bull", "mom_bear"]:
-#         side_pnl = sum(t.get("pnl", 0) for t in RAM_STATE["trades"][side])
-#         engine_stats[side] = side_pnl
-#         total_pnl += side_pnl
-
-#     RAM_STATE["pnl"]["total"] = total_pnl
-#     return {
-#         "pnl": {**RAM_STATE["pnl"], **engine_stats},
-#         "data_connected": RAM_STATE["data_connected"],
-#         "engine_status": {k: ("1" if v else "0") for k, v in RAM_STATE["engine_live"].items()},
-#     }
-
-
-# @app.get("/api/orders")
-# async def get_orders():
-#     return RAM_STATE["trades"]
-
-
-# @app.get("/api/scanner")
-# async def get_scanner():
-#     signals = {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]}
-#     for t_id, s in RAM_STATE["stocks"].items():
-#         if s.get("status") in ["TRIGGER_WATCH", "MOM_TRIGGER_WATCH"]:
-#             side = s.get("side_latch", "").lower()
-#             if side in signals:
-#                 signals[side].append({"symbol": s["symbol"], "price": s.get("trigger_px", 0)})
-#     return signals
-
-
-# @app.post("/api/control")
-# async def control_center(data: dict):
-#     action = data.get("action")
-#     if action == "save_api":
-#         key, secret = data.get("api_key"), data.get("api_secret")
-#         RAM_STATE["api_key"], RAM_STATE["api_secret"] = str(key), str(secret)
-#         await TradeControl.save_config(key, secret)
-#         logger.info("💾 CONTROL: API credentials persisted.")
-#         return {"status": "ok"}
-
-#     elif action == "toggle_engine":
-#         RAM_STATE["engine_live"][data["side"]] = data["enabled"]
-#         logger.info(f"⚙️ CONTROL: Engine {data['side']} set to {data['enabled']}")
-#         return {"status": "ok"}
-
-#     elif action == "manual_exit":
-#         RAM_STATE["manual_exits"].add(data["symbol"])
-#         return {"status": "ok"}
-
-#     return {"status": "error"}
-
-
-# @app.get("/api/settings/engine/{side}")
-# async def get_engine_settings(side: str):
-#     return RAM_STATE["config"].get(side, {})
-
-
-# @app.post("/api/settings/engine/{side}")
-# async def save_engine_settings(side: str, data: dict):
-#     if side in RAM_STATE["config"]:
-#         RAM_STATE["config"][side].update(data)
-#         logger.info(f"📝 SETTINGS: Volume matrix updated for {side}.")
-#     return {"status": "success"}
-
-
-# # --- AUTH FLOW ---
-
-# @app.get("/api/kite/login")
-# async def kite_login_redirect():
-#     api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY")
-#     if not api_key:
-#         return {"status": "error", "message": "Save API Key first."}
-#     return RedirectResponse(url=KiteConnect(api_key=api_key).login_url())
-
-
-# @app.get("/login")
-# async def kite_callback(request_token: str = None):
-#     if not request_token:
-#         return RedirectResponse(url="/")
-#     try:
-#         api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY")
-#         api_secret = RAM_STATE["api_secret"] or os.getenv("KITE_API_SECRET")
-#         if not api_key or not api_secret:
-#             k, s = await TradeControl.get_config()
-#             api_key, api_secret = api_key or k, api_secret or s
-
-#         kite = KiteConnect(api_key=str(api_key))
-#         data = await asyncio.to_thread(kite.generate_session, request_token, api_secret=str(api_secret))
-
-#         token = data["access_token"]
-#         await TradeControl.save_access_token(token)
-
-#         RAM_STATE["access_token"] = token
-#         RAM_STATE["api_key"] = str(api_key)
-#         RAM_STATE["api_secret"] = str(api_secret)
-#         RAM_STATE["kite"] = kite
-#         RAM_STATE["kite"].set_access_token(token)
-
-#         logger.info("🔑 AUTH: Zerodha Session established.")
-#         return RedirectResponse(url="/")
-#     except Exception as e:
-#         logger.exception(f"❌ AUTH ERROR: {e}")
-#         return {"status": "error", "message": str(e)}
-
-
-# # --- SERVER ENTRY POINT ---
-
-# if __name__ == "__main__":
-#     port = int(os.environ.get("PORT", 8000))
-#     # CRITICAL: Use workers=1 for memory consistency
-#     uvicorn.run("main:app", host="0.0.0.0", port=port, loop="uvloop", workers=1)
-
-# main.py
-# main.py
 import asyncio
 import os
 import logging
-import json
-from datetime import datetime, time as dtime
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 import pytz
@@ -3713,10 +15,7 @@ from redis_manager import TradeControl
 from breakout_engine import BreakoutEngine
 from momentum_engine import MomentumEngine
 
-# -----------------------------
-# ✅ HEROKU / GUNICORN TWISTED SIGNAL BYPASS (SAFE)
-# KiteTicker uses Twisted underneath; signal handlers can crash under gunicorn.
-# -----------------------------
+# Twisted signal bypass for gunicorn
 try:
     from twisted.internet import reactor  # type: ignore
     _original_run = reactor.run
@@ -3729,9 +28,6 @@ try:
 except Exception:
     pass
 
-# -----------------------------
-# LOGGING / TIMEZONE
-# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [MAIN] %(message)s",
@@ -3740,29 +36,18 @@ logging.basicConfig(
 logger = logging.getLogger("Nexus_Main")
 IST = pytz.timezone("Asia/Kolkata")
 
-# -----------------------------
-# FASTAPI APP
-# -----------------------------
-app = FastAPI(title="Nexus Core", version="1.0.0", strict_slashes=False)
+# ✅ FastAPI syntax fix: redirect_slashes (not strict_slashes)
+app = FastAPI(title="Nexus Core", version="1.0.0", redirect_slashes=False)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------
-# DEFAULTS (SYNC WITH index.html)
-# -----------------------------
 def _default_volume_matrix() -> list:
-    """
-    Frontend default requirements:
-      - min_sma_avg default 1000 for all tiers
-      - min_vol_price_cr 1..10
-      - sma_multiplier from 20 down to 2 (10 tiers)
-    """
     multipliers = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
     out = []
     for i in range(10):
@@ -3775,124 +60,101 @@ def _default_volume_matrix() -> list:
         )
     return out
 
-
 DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
-    "bull": {
-        "risk_reward": "1:2",
-        "trailing_sl": "1:1.5",
-        "total_trades": 5,
-        "risk_trade_1": 2000,
-        "volume_criteria": _default_volume_matrix(),
-        "trade_start": "09:15",
-        "trade_end": "15:10",
-    },
-    "bear": {
-        "risk_reward": "1:2",
-        "trailing_sl": "1:1.5",
-        "total_trades": 5,
-        "risk_trade_1": 2000,
-        "volume_criteria": _default_volume_matrix(),
-        "trade_start": "09:15",
-        "trade_end": "15:10",
-    },
-    "mom_bull": {
-        "risk_reward": "1:2",
-        "trailing_sl": "1:1.5",
-        "total_trades": 5,
-        "risk_trade_1": 2000,
-        "volume_criteria": _default_volume_matrix(),
-        "trade_start": "09:15",
-        "trade_end": "09:17",
-    },
-    "mom_bear": {
-        "risk_reward": "1:2",
-        "trailing_sl": "1:1.5",
-        "total_trades": 5,
-        "risk_trade_1": 2000,
-        "volume_criteria": _default_volume_matrix(),
-        "trade_start": "09:15",
-        "trade_end": "09:17",
-    },
+    "bull": {"risk_reward":"1:2","trailing_sl":"1:1.5","total_trades":5,"risk_trade_1":2000,"volume_criteria":_default_volume_matrix(),"trade_start":"09:15","trade_end":"15:10"},
+    "bear": {"risk_reward":"1:2","trailing_sl":"1:1.5","total_trades":5,"risk_trade_1":2000,"volume_criteria":_default_volume_matrix(),"trade_start":"09:15","trade_end":"15:10"},
+    "mom_bull": {"risk_reward":"1:2","trailing_sl":"1:1.5","total_trades":5,"risk_trade_1":2000,"volume_criteria":_default_volume_matrix(),"trade_start":"09:15","trade_end":"09:17"},
+    "mom_bear": {"risk_reward":"1:2","trailing_sl":"1:1.5","total_trades":5,"risk_trade_1":2000,"volume_criteria":_default_volume_matrix(),"trade_start":"09:15","trade_end":"09:17"},
 }
 
-# -----------------------------
-# RAM STATE (single source of truth)
-# -----------------------------
 RAM_STATE: Dict[str, Any] = {
-    "main_loop": None,               # asyncio loop
-    "tick_queue": None,              # asyncio.Queue
-    "tick_worker_task": None,        # task handle
-    "kite": None,                    # KiteConnect
-    "kws": None,                     # KiteTicker
+    "main_loop": None,
+    "tick_queue": None,
+    "tick_worker_task": None,
+    "kite": None,
+    "kws": None,
     "api_key": "",
     "api_secret": "",
     "access_token": "",
-    "stocks": {},                    # token -> stock dict
-    "trades": {                      # live trades by engine side
-        "bull": [],
-        "bear": [],
-        "mom_bull": [],
-        "mom_bear": [],
-    },
-    "engine_live": {                 # engine toggles from UI
-        "bull": True,
-        "bear": True,
-        "mom_bull": True,
-        "mom_bear": True,
-    },
-    "config": {                      # per-side settings in RAM
+    "stocks": {},
+    "trades": {"bull": [], "bear": [], "mom_bull": [], "mom_bear": []},
+    "engine_live": {"bull": True, "bear": True, "mom_bull": True, "mom_bear": True},
+    "config": {
         "bull": dict(DEFAULT_CONFIG["bull"]),
         "bear": dict(DEFAULT_CONFIG["bear"]),
         "mom_bull": dict(DEFAULT_CONFIG["mom_bull"]),
         "mom_bear": dict(DEFAULT_CONFIG["mom_bear"]),
     },
-    "manual_exits": set(),           # legacy
-    "data_connected": {
-        "breakout": False,
-        "momentum": False,
-    },
+    "manual_exits": set(),
+    "data_connected": {"breakout": False, "momentum": False},
 }
 
-# -----------------------------
-# HEARTBEAT / TICK STATS
-# -----------------------------
-TICK_STATS = {"received": 0, "last_logged": datetime.now(IST)}
-
-# -----------------------------
-# HELPERS
-# -----------------------------
 def _now_ist() -> datetime:
     return datetime.now(IST)
 
-def _compute_pnl() -> Dict[str, float]:
-    pnl = {k: 0.0 for k in ["bull", "bear", "mom_bull", "mom_bear"]}
-    for side in pnl.keys():
-        pnl[side] = float(
-            sum(float(t.get("pnl", 0.0) or 0.0) for t in RAM_STATE["trades"].get(side, []))
-        )
-    pnl["total"] = float(sum(pnl[s] for s in ["bull", "bear", "mom_bull", "mom_bear"]))
-    return pnl
-
 def _safe_int(x, default=0) -> int:
-    try:
-        return int(x)
-    except Exception:
-        return default
+    try: return int(x)
+    except Exception: return default
 
 def _safe_float(x, default=0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return default
+    try: return float(x)
+    except Exception: return default
+
+def _compute_pnl() -> Dict[str, float]:
+    pnl = {k: 0.0 for k in ["bull","bear","mom_bull","mom_bear"]}
+    for side in pnl.keys():
+        pnl[side] = float(sum(float(t.get("pnl", 0.0) or 0.0) for t in RAM_STATE["trades"].get(side, [])))
+    pnl["total"] = float(sum(pnl[s] for s in ["bull","bear","mom_bull","mom_bear"]))
+    return pnl
 
 # -----------------------------
-# ✅ QUEUE-BASED TICK PROCESSOR (THREAD-SAFE)
+# CENTRALIZED CANDLE AGGREGATION
+# -----------------------------
+def _update_candle(stock: dict, ltp: float, vol: int):
+    now = datetime.now(IST)
+    bucket = now.replace(second=0, microsecond=0)
+
+    c = stock.get("candle")
+    if not c:
+        stock["candle"] = {
+            "bucket": bucket,
+            "open": float(ltp),
+            "high": float(ltp),
+            "low": float(ltp),
+            "close": float(ltp),
+            "volume": 0,
+        }
+        stock["last_vol"] = int(vol)
+        return None  # no closed candle
+
+    if c["bucket"] != bucket:
+        closed = c
+        stock["candle"] = {
+            "bucket": bucket,
+            "open": float(ltp),
+            "high": float(ltp),
+            "low": float(ltp),
+            "close": float(ltp),
+            "volume": 0,
+        }
+        stock["last_vol"] = int(vol)
+        return closed
+
+    # same candle
+    c["high"] = max(float(c["high"]), float(ltp))
+    c["low"] = min(float(c["low"]), float(ltp))
+    c["close"] = float(ltp)
+
+    last_vol = int(stock.get("last_vol", 0) or 0)
+    if last_vol > 0:
+        c["volume"] += max(0, int(vol) - last_vol)
+    stock["last_vol"] = int(vol)
+    return None
+
+# -----------------------------
+# TICK WORKER
 # -----------------------------
 async def tick_worker():
-    """
-    Single consumer of tick batches.
-    All RAM_STATE mutation happens in event loop thread only.
-    """
     q: asyncio.Queue = RAM_STATE["tick_queue"]
     logger.info("🧵 tick_worker running")
 
@@ -3910,18 +172,22 @@ async def tick_worker():
 
                 ltp = _safe_float(tick.get("last_price", 0.0), 0.0)
                 vol = _safe_int(tick.get("volume_traded", 0), 0)
+                if ltp <= 0:
+                    continue
 
-                if ltp > 0:
-                    stock["ltp"] = ltp
+                stock["ltp"] = ltp
 
-                # Engines
-                if RAM_STATE["engine_live"].get("bull") or RAM_STATE["engine_live"].get("bear"):
-                    await BreakoutEngine.run(token, ltp, vol, RAM_STATE)
+                # ✅ centralized candle aggregation (always)
+                closed = _update_candle(stock, ltp, vol)
+                if closed:
+                    # pass same closed candle to both engines
+                    asyncio.create_task(BreakoutEngine.on_candle_close(token, closed, RAM_STATE))
+                    asyncio.create_task(MomentumEngine.on_candle_close(token, closed, RAM_STATE))
 
-                if RAM_STATE["engine_live"].get("mom_bull") or RAM_STATE["engine_live"].get("mom_bear"):
-                    await MomentumEngine.run(token, ltp, vol, RAM_STATE)
+                # ✅ always run both engines (they self-gate entries by toggle)
+                await BreakoutEngine.run(token, ltp, vol, RAM_STATE)
+                await MomentumEngine.run(token, ltp, vol, RAM_STATE)
 
-            # Health dots (we are receiving ticks)
             RAM_STATE["data_connected"]["breakout"] = True
             RAM_STATE["data_connected"]["momentum"] = True
 
@@ -3931,33 +197,18 @@ async def tick_worker():
             q.task_done()
 
 def on_ticks(ws, ticks):
-    """
-    KiteTicker callback (runs in background thread).
-    We only enqueue to asyncio loop.
-    """
-    global TICK_STATS
-
     loop = RAM_STATE.get("main_loop")
     q = RAM_STATE.get("tick_queue")
     if not loop or not q:
         return
 
-    # heartbeat stats (safe)
-    try:
-        TICK_STATS["received"] += len(ticks)
-        if TICK_STATS["received"] >= 500:
-            logger.info(f"💓 HEARTBEAT: {TICK_STATS['received']} ticks enqueued.")
-            TICK_STATS["received"] = 0
-    except Exception:
-        pass
-
     def _put():
         try:
             q.put_nowait(ticks)
         except asyncio.QueueFull:
-            # Drop one batch (keep fresh)
             try:
                 _ = q.get_nowait()
+                q.task_done()
             except Exception:
                 pass
             try:
@@ -3973,13 +224,10 @@ def on_connect(ws, response):
     async def _sub():
         tokens = await TradeControl.get_subscribe_universe_tokens()
         tokens = [int(x) for x in tokens if int(x) > 0]
-
-        # If universe not present, fallback to whatever we have in RAM from market cache
         if not tokens:
             tokens = list(RAM_STATE["stocks"].keys())
             logger.warning(f"⚠️ WS: universe empty; fallback subscribe RAM stocks = {len(tokens)}")
 
-        # Only subscribe tokens that exist in RAM_STATE["stocks"]
         tokens = [t for t in tokens if t in RAM_STATE["stocks"]]
         if not tokens:
             logger.error("❌ WS: No valid tokens to subscribe (RAM_STATE empty).")
@@ -3992,7 +240,6 @@ def on_connect(ws, response):
         RAM_STATE["data_connected"]["breakout"] = True
         RAM_STATE["data_connected"]["momentum"] = True
 
-    # schedule subscribe on main loop
     loop = RAM_STATE.get("main_loop")
     if loop:
         asyncio.run_coroutine_threadsafe(_sub(), loop)
@@ -4007,32 +254,49 @@ def on_close(ws, code, reason):
     RAM_STATE["data_connected"]["breakout"] = False
     RAM_STATE["data_connected"]["momentum"] = False
 
-# -----------------------------
-# STARTUP: LOAD CACHE + RESTORE SETTINGS + START WS
-# -----------------------------
+def _start_kiteticker():
+    # Close old
+    try:
+        kws = RAM_STATE.get("kws")
+        if kws:
+            kws.close()
+    except Exception:
+        pass
+
+    api_key = RAM_STATE.get("api_key") or ""
+    access_token = RAM_STATE.get("access_token") or ""
+    if not api_key or not access_token:
+        return False
+
+    try:
+        kws = KiteTicker(api_key, access_token)
+        kws.on_ticks = on_ticks
+        kws.on_connect = on_connect
+        kws.on_error = on_error
+        kws.on_close = on_close
+        kws.connect(threaded=True)
+        RAM_STATE["kws"] = kws
+        logger.info("🛰️ WS: KiteTicker started (threaded=True).")
+        return True
+    except Exception as e:
+        logger.exception(f"❌ WS START FAILED: {e}")
+        RAM_STATE["kws"] = None
+        return False
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("--- 🚀 NEXUS BOOT ---")
-
-    # main loop
     RAM_STATE["main_loop"] = asyncio.get_running_loop()
-
-    # tick queue + worker
     RAM_STATE["tick_queue"] = asyncio.Queue(maxsize=2000)
     RAM_STATE["tick_worker_task"] = asyncio.create_task(tick_worker())
 
-    # 1) Restore API creds from Redis or Env
     key_redis, sec_redis = await TradeControl.get_config()
     RAM_STATE["api_key"] = str(key_redis or os.getenv("KITE_API_KEY", "") or "")
     RAM_STATE["api_secret"] = str(sec_redis or os.getenv("KITE_API_SECRET", "") or "")
-    if RAM_STATE["api_key"]:
-        logger.info(f"🔑 API KEY loaded ({RAM_STATE['api_key'][:4]}***)")
 
-    # 2) Restore access token
     token = await TradeControl.get_access_token()
     RAM_STATE["access_token"] = str(token or "")
 
-    # 3) Load market cache into RAM_STATE["stocks"] (this is your new "universe")
     cached = await TradeControl.get_all_market_data()
     stocks: Dict[int, Dict[str, Any]] = {}
 
@@ -4051,53 +315,51 @@ async def startup_event():
             "prev_close": _safe_float(md.get("prev_close", 0), 0.0),
             "sync_time": md.get("sync_time", ""),
 
-            # runtime
-            "status": "WAITING",
+            # shared market runtime
+            "ltp": 0.0,
             "candle": None,
             "last_vol": 0,
-            "ltp": 0.0,
-            "active_trade": None,
 
-            # scanner enrichment
-            "scan_seen_ts": None,
-            "scan_seen_time": None,
-            "scan_vol": 0,
-            "scan_reason": None,
+            # breakout engine state
+            "brk_status": "WAITING",
+            "brk_active_trade": None,
+            "brk_side_latch": None,
+            "brk_trigger_px": None,
+            "brk_trigger_set_ts": None,
+            "brk_trigger_candle": None,
+            "brk_scan_seen_ts": None,
+            "brk_scan_seen_time": None,
+            "brk_scan_vol": 0,
+            "brk_scan_reason": None,
+
+            # momentum engine state
+            "mom_status": "WAITING",
+            "mom_active_trade": None,
+            "mom_side_latch": None,
+            "mom_trigger_px": None,
+            "mom_trigger_candle": None,
+            "mom_scan_seen_ts": None,
+            "mom_scan_seen_time": None,
+            "mom_scan_vol": 0,
+            "mom_scan_reason": None,
         }
 
     RAM_STATE["stocks"] = stocks
     logger.info(f"✅ STARTUP: Loaded {len(stocks)} stocks from Redis market_cache.")
 
-    # 4) Restore persisted strategy settings into RAM
     for side in ["bull", "bear", "mom_bull", "mom_bear"]:
         saved = await TradeControl.get_strategy_settings(side)
         if saved:
             RAM_STATE["config"][side].update(saved)
-            logger.info(f"🔁 SETTINGS: Restored {side} settings from Redis.")
 
-    # 5) Build KiteConnect session (if possible)
     if RAM_STATE["api_key"] and RAM_STATE["access_token"]:
         try:
             RAM_STATE["kite"] = KiteConnect(api_key=RAM_STATE["api_key"])
             RAM_STATE["kite"].set_access_token(RAM_STATE["access_token"])
-            logger.info("✅ KITE: Session ready.")
-        except Exception as e:
-            logger.exception(f"❌ KITE: Session setup failed: {e}")
+        except Exception:
             RAM_STATE["kite"] = None
 
-    # 6) Start WebSocket stream (subscribe to redis universe tokens)
-    if RAM_STATE["api_key"] and RAM_STATE["access_token"]:
-        try:
-            RAM_STATE["kws"] = KiteTicker(RAM_STATE["api_key"], RAM_STATE["access_token"])
-            RAM_STATE["kws"].on_ticks = on_ticks
-            RAM_STATE["kws"].on_connect = on_connect
-            RAM_STATE["kws"].on_error = on_error
-            RAM_STATE["kws"].on_close = on_close
-
-            RAM_STATE["kws"].connect(threaded=True)  # non-blocking
-            logger.info("🛰️ WS: KiteTicker started (threaded=True).")
-        except Exception as e:
-            logger.exception(f"❌ WS START FAILED: {e}")
+        _start_kiteticker()
     else:
         logger.warning("⚠️ WS: Not started (missing api_key or access_token).")
 
@@ -4110,9 +372,6 @@ async def shutdown_event():
     except Exception:
         pass
 
-# -----------------------------
-# UI ROUTES
-# -----------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
     try:
@@ -4120,15 +379,8 @@ async def home():
     except Exception:
         return HTMLResponse("<h3>Nexus backend is running. Place index.html next to main.py</h3>")
 
-# -----------------------------
-# AUTH (SYNC WITH FRONTEND BUTTON: window.location.href='/login/')
-# -----------------------------
 @app.get("/login/")
 async def login(request_token: Optional[str] = None):
-    """
-    - If request_token missing => redirect to Kite login URL
-    - If present => generate session, store access token in Redis, restart session in RAM
-    """
     api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY", "")
     api_secret = RAM_STATE["api_secret"] or os.getenv("KITE_API_SECRET", "")
 
@@ -4141,14 +393,12 @@ async def login(request_token: Optional[str] = None):
         return HTMLResponse("<h3>Save API KEY first (API Gateway button)</h3>")
 
     if not request_token:
-        # redirect to kite login
         try:
             url = KiteConnect(api_key=str(api_key)).login_url()
             return RedirectResponse(url=url)
         except Exception as e:
             return HTMLResponse(f"<h3>Login URL error: {e}</h3>")
 
-    # callback: exchange request_token -> access_token
     try:
         kite = KiteConnect(api_key=str(api_key))
         data = await asyncio.to_thread(kite.generate_session, request_token, api_secret=str(api_secret))
@@ -4163,15 +413,15 @@ async def login(request_token: Optional[str] = None):
         RAM_STATE["kite"] = kite
         RAM_STATE["kite"].set_access_token(access_token)
 
+        # ✅ Restart WS immediately after login
+        _start_kiteticker()
+
         logger.info("✅ AUTH: Session established & saved to Redis.")
         return RedirectResponse(url="/")
     except Exception as e:
         logger.exception(f"❌ AUTH ERROR: {e}")
         return HTMLResponse(f"<h3>Auth failed: {e}</h3>")
 
-# -----------------------------
-# CORE API (SYNC WITH index.html)
-# -----------------------------
 @app.get("/api/stats")
 async def get_stats():
     pnl = _compute_pnl()
@@ -4189,71 +439,88 @@ async def get_orders():
 
 @app.get("/api/settings/engine/{side}")
 async def get_engine_settings(side: str):
-    if side not in RAM_STATE["config"]:
-        return {}
-    return RAM_STATE["config"][side]
+    return RAM_STATE["config"].get(side, {})
 
 @app.post("/api/settings/engine/{side}")
 async def save_engine_settings(side: str, data: Dict[str, Any]):
     if side in RAM_STATE["config"]:
         RAM_STATE["config"][side].update(data)
         await TradeControl.save_strategy_settings(side, RAM_STATE["config"][side])
-        logger.info(f"📝 SETTINGS: Updated & persisted for {side}.")
     return {"status": "success"}
 
-# -----------------------------
-# SCANNER (ENRICHED)
-# -----------------------------
 @app.get("/api/scanner")
 async def get_scanner():
     signals = {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]}
     now = _now_ist()
 
     for _, s in RAM_STATE["stocks"].items():
-        st = s.get("status")
-        if st not in ("TRIGGER_WATCH", "MOM_TRIGGER_WATCH"):
-            continue
-
-        side = (s.get("side_latch") or "").lower()
-        if side not in signals:
-            continue
-
-        if not s.get("scan_seen_ts"):
-            s["scan_seen_ts"] = int(now.timestamp())
-            s["scan_seen_time"] = now.strftime("%H:%M:%S")
-
-        vol = _safe_int(s.get("scan_vol", 0), 0)
-        sma = _safe_float(s.get("sma", 0), 0.0)
-        rel = (float(vol) / sma) if sma > 0 else None
-
-        prev_close = _safe_float(s.get("prev_close", 0), 0.0)
-        ltp = _safe_float(s.get("ltp", 0), 0.0)
-        pct = ((ltp - prev_close) / prev_close * 100.0) if prev_close > 0 and ltp > 0 else None
-
         sym = s.get("symbol") or ""
+        if not sym:
+            continue
 
-        signals[side].append(
-            {
-                "symbol": sym,
-                "trigger_px": s.get("trigger_px", s.get("trigger_price", 0)),
-                "seen_time": s.get("scan_seen_time"),
-                "seen_ts": s.get("scan_seen_ts"),
-                "volume": vol,
-                "rel_vol": rel,
-                "pct_change": pct,
-                "chart_url": f"https://www.tradingview.com/chart/?symbol=NSE:{sym}",
-                "reason": s.get("scan_reason", "Candle Confirmed"),
-            }
-        )
+        # breakout scanner
+        if s.get("brk_status") == "TRIGGER_WATCH":
+            side = (s.get("brk_side_latch") or "").lower()
+            if side in ("bull", "bear"):
+                if not s.get("brk_scan_seen_ts"):
+                    s["brk_scan_seen_ts"] = int(now.timestamp())
+                    s["brk_scan_seen_time"] = now.strftime("%H:%M:%S")
+
+                trig = s.get("brk_trigger_px", 0)
+                vol = int(s.get("brk_scan_vol", 0) or 0)
+                sma = float(s.get("sma", 0) or 0)
+                rel = (float(vol) / sma) if sma > 0 else None
+
+                prev_close = float(s.get("prev_close", 0) or 0)
+                ltp = float(s.get("ltp", 0) or 0)
+                pct = ((ltp - prev_close) / prev_close * 100.0) if prev_close > 0 and ltp > 0 else None
+
+                signals[side].append({
+                    "symbol": sym,
+                    "trigger_px": trig,
+                    "seen_time": s.get("brk_scan_seen_time"),
+                    "seen_ts": s.get("brk_scan_seen_ts"),
+                    "volume": vol,
+                    "rel_vol": rel,
+                    "pct_change": pct,
+                    "chart_url": f"https://www.tradingview.com/chart/?symbol=NSE:{sym}",
+                    "reason": s.get("brk_scan_reason", "Candle Confirmed"),
+                })
+
+        # momentum scanner
+        if s.get("mom_status") == "TRIGGER_WATCH":
+            side = (s.get("mom_side_latch") or "").lower()
+            if side in ("mom_bull", "mom_bear"):
+                if not s.get("mom_scan_seen_ts"):
+                    s["mom_scan_seen_ts"] = int(now.timestamp())
+                    s["mom_scan_seen_time"] = now.strftime("%H:%M:%S")
+
+                trig = s.get("mom_trigger_px", 0)
+                vol = int(s.get("mom_scan_vol", 0) or 0)
+                sma = float(s.get("sma", 0) or 0)
+                rel = (float(vol) / sma) if sma > 0 else None
+
+                prev_close = float(s.get("prev_close", 0) or 0)
+                ltp = float(s.get("ltp", 0) or 0)
+                pct = ((ltp - prev_close) / prev_close * 100.0) if prev_close > 0 and ltp > 0 else None
+
+                signals[side].append({
+                    "symbol": sym,
+                    "trigger_px": trig,
+                    "seen_time": s.get("mom_scan_seen_time"),
+                    "seen_ts": s.get("mom_scan_seen_ts"),
+                    "volume": vol,
+                    "rel_vol": rel,
+                    "pct_change": pct,
+                    "chart_url": f"https://www.tradingview.com/chart/?symbol=NSE:{sym}",
+                    "reason": s.get("mom_scan_reason", "Candle Confirmed"),
+                })
 
     for side in signals:
         signals[side].sort(key=lambda x: x.get("seen_ts", 0), reverse=True)
 
     return signals
 
-# -----------------------------
-# CONTROL ENDPOINT
-# -----------------------------
 @app.post("/api/control")
 async def control(request: Request):
     data = await request.json()
@@ -4264,7 +531,6 @@ async def control(request: Request):
         enabled = bool(data.get("enabled"))
         if side in RAM_STATE["engine_live"]:
             RAM_STATE["engine_live"][side] = enabled
-            logger.info(f"ENGINE TOGGLE: {side} -> {enabled}")
         return {"status": "ok"}
 
     if action == "save_api":
@@ -4273,17 +539,14 @@ async def control(request: Request):
         RAM_STATE["api_key"] = str(api_key)
         RAM_STATE["api_secret"] = str(api_secret)
         await TradeControl.save_config(api_key, api_secret)
-        logger.info("🔐 API credentials saved to Redis.")
         return {"status": "ok"}
 
-    # legacy manual exit
     if action == "manual_exit":
         symbol = data.get("symbol")
         if symbol:
             RAM_STATE["manual_exits"].add(symbol)
         return {"status": "ok"}
 
-    # square off one
     if action == "square_off_one":
         side = data.get("side")
         symbol = data.get("symbol")
@@ -4295,9 +558,9 @@ async def control(request: Request):
             return {"status": "error", "message": "symbol not found"}
 
         try:
-            if side in ("bull", "bear") and stock.get("status") == "OPEN":
+            if side in ("bull", "bear") and stock.get("brk_status") == "OPEN" and (stock.get("brk_side_latch") or "").lower() == side:
                 await BreakoutEngine.close_position(stock, RAM_STATE, "UI_EXIT_ONE")
-            elif side in ("mom_bull", "mom_bear") and stock.get("status") == "MOM_OPEN":
+            elif side in ("mom_bull", "mom_bear") and stock.get("mom_status") == "OPEN" and (stock.get("mom_side_latch") or "").lower() == side:
                 await MomentumEngine.close_position(stock, RAM_STATE, "UI_EXIT_ONE")
             else:
                 return {"status": "ok", "message": "no open position for that side"}
@@ -4306,7 +569,6 @@ async def control(request: Request):
 
         return {"status": "ok"}
 
-    # square off all for one side
     if action == "square_off_all":
         side = data.get("side")
         if side not in ("bull", "bear", "mom_bull", "mom_bear"):
@@ -4315,11 +577,11 @@ async def control(request: Request):
         try:
             if side in ("bull", "bear"):
                 for s in list(RAM_STATE["stocks"].values()):
-                    if s.get("status") == "OPEN" and (s.get("side_latch", "").lower() == side):
+                    if s.get("brk_status") == "OPEN" and (s.get("brk_side_latch") or "").lower() == side:
                         await BreakoutEngine.close_position(s, RAM_STATE, "UI_EXIT_ALL")
             else:
                 for s in list(RAM_STATE["stocks"].values()):
-                    if s.get("status") == "MOM_OPEN" and (s.get("side_latch", "").lower() == side):
+                    if s.get("mom_status") == "OPEN" and (s.get("mom_side_latch") or "").lower() == side:
                         await MomentumEngine.close_position(s, RAM_STATE, "UI_EXIT_ALL")
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -4328,9 +590,6 @@ async def control(request: Request):
 
     return {"status": "error", "message": "unknown action"}
 
-# -----------------------------
-# OPTIONAL: TICK INGEST (TESTING)
-# -----------------------------
 @app.post("/api/tick")
 async def ingest_tick(data: Dict[str, Any]):
     token = int(data.get("token", 0) or 0)
@@ -4343,13 +602,14 @@ async def ingest_tick(data: Dict[str, Any]):
 
     stock["ltp"] = ltp
 
+    closed = _update_candle(stock, ltp, vol)
+    if closed:
+        asyncio.create_task(BreakoutEngine.on_candle_close(token, closed, RAM_STATE))
+        asyncio.create_task(MomentumEngine.on_candle_close(token, closed, RAM_STATE))
+
     await BreakoutEngine.run(token, ltp, vol, RAM_STATE)
     await MomentumEngine.run(token, ltp, vol, RAM_STATE)
 
     RAM_STATE["data_connected"]["breakout"] = True
     RAM_STATE["data_connected"]["momentum"] = True
     return {"status": "ok"}
-
-# NOTE:
-# You DO NOT need if __name__ == "__main__": when deploying on Heroku with Procfile:
-# web: gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT --timeout 120 --log-level info

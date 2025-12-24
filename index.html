@@ -82,13 +82,8 @@
             background: rgba(30, 41, 59, 0.8);
             border-color: rgba(59, 130, 246, 0.7);
         }
-        .icon-danger:hover {
-            border-color: rgba(244, 63, 94, 0.7);
-        }
-        .tiny {
-            font-size: 9px;
-            letter-spacing: 0.12em;
-        }
+        .icon-danger:hover { border-color: rgba(244, 63, 94, 0.7); }
+        .tiny { font-size: 9px; letter-spacing: 0.12em; }
         .muted { color: #64748b; }
         .mono { font-family: 'JetBrains Mono', monospace; }
     </style>
@@ -140,7 +135,8 @@
 
             <div class="flex items-center gap-8">
                 <div class="text-right">
-                    <div class="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Net Unrealized P&L</div>
+                    <!-- ✅ FIX: label matches backend behavior (realized + unrealized) -->
+                    <div class="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Net P&amp;L (Realized + Unrealized)</div>
                     <span id="total-pnl" class="text-xl font-black text-white tabular-nums">₹ 0.00</span>
                 </div>
                 <div class="flex items-center gap-2">
@@ -274,7 +270,6 @@
         }
 
         function fmt2(n) { return (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '--'; }
-        function fmt1(n) { return (typeof n === 'number' && isFinite(n)) ? n.toFixed(1) : '--'; }
 
         // Default matrix (10 levels)
         function defaultMatrix() {
@@ -369,24 +364,43 @@
                 // Global stats
                 const stats = statsRes.data;
                 const totalPnlEl = document.getElementById('total-pnl');
-                totalPnlEl.innerText = `₹ ${stats.pnl.total.toFixed(2)}`;
-                totalPnlEl.className = `text-xl font-black tabular-nums ${stats.pnl.total >= 0 ? 'text-emerald-400' : 'text-rose-500'}`;
+                totalPnlEl.innerText = `₹ ${Number(stats.pnl?.total || 0).toFixed(2)}`;
+                totalPnlEl.className = `text-xl font-black tabular-nums ${(Number(stats.pnl?.total || 0) >= 0) ? 'text-emerald-400' : 'text-rose-500'}`;
 
-                updateDot('dot-brk', stats.data_connected.breakout);
-                updateDot('dot-mom', stats.data_connected.momentum);
+                updateDot('dot-brk', !!stats.data_connected?.breakout);
+                updateDot('dot-mom', !!stats.data_connected?.momentum);
+
+                // Optional feed status text
+                const feed = (!!stats.data_connected?.breakout || !!stats.data_connected?.momentum);
+                const feedEl = document.getElementById('feed-status');
+                if (feedEl) {
+                    feedEl.innerText = feed ? 'Connected' : 'Disconnected';
+                    feedEl.className = `text-[10px] font-mono font-bold uppercase ${feed ? 'text-emerald-500' : 'text-rose-500'}`;
+                }
 
                 // Toggles + side PnL
                 engineMap.forEach(e => {
-                    document.getElementById(`toggle-${e.id}`).checked = stats.engine_status[e.id] === "1";
-                    document.getElementById(`${e.id}-pnl-side`).innerText = (stats.pnl[e.id] || 0).toFixed(2);
-                    document.getElementById(`${e.id}-pnl-side`).className = `text-xs font-black px-2 tabular-nums ${(stats.pnl[e.id] || 0) >= 0 ? 'text-emerald-400' : 'text-rose-500'}`;
+                    const on = (stats.engine_status?.[e.id] === "1");
+                    const sidePnl = Number(stats.pnl?.[e.id] || 0);
+
+                    const toggleEl = document.getElementById(`toggle-${e.id}`);
+                    if (toggleEl) toggleEl.checked = on;
+
+                    const pnlEl = document.getElementById(`${e.id}-pnl-side`);
+                    if (pnlEl) {
+                        pnlEl.innerText = sidePnl.toFixed(2);
+                        pnlEl.className = `text-xs font-black px-2 tabular-nums ${(sidePnl >= 0) ? 'text-emerald-400' : 'text-rose-500'}`;
+                    }
                 });
 
-                // Orders
-                const orders = ordersRes.data;
+                // Orders (✅ FIX: show ONLY OPEN trades; backend may send CLOSED too)
+                const orders = ordersRes.data || {};
                 engineMap.forEach(e => {
                     const tbody = document.getElementById(`${e.id}-tbody`);
-                    const data = orders[e.id] || [];
+                    if (!tbody) return;
+
+                    const data = (orders[e.id] || []).filter(t => (t.status || 'OPEN') === 'OPEN');
+
                     if (data.length > 0) {
                         tbody.innerHTML = data.map(t => `
                             <tr class="hover:bg-blue-600/5 transition-colors">
@@ -395,7 +409,7 @@
                                 </td>
                                 <td class="px-3 py-2 text-center text-blue-400 font-mono">₹${Number(t.entry_price).toFixed(2)}</td>
                                 <td class="px-3 py-2 text-center text-emerald-500 font-mono">₹${Number(t.target_price).toFixed(2)}</td>
-                                <td class="px-3 py-2 text-right font-black tabular-nums ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'}">₹${Number(t.pnl).toFixed(2)}</td>
+                                <td class="px-3 py-2 text-right font-black tabular-nums ${(Number(t.pnl) >= 0) ? 'text-emerald-400' : 'text-rose-500'}">₹${Number(t.pnl).toFixed(2)}</td>
                                 <td class="px-3 py-2 text-right">
                                     <button class="icon-btn icon-danger" title="Square off this position" onclick="squareOffOne('${e.id}', '${t.symbol}')">
                                         <i data-lucide="x" class="w-4 h-4 text-rose-400"></i>
@@ -409,7 +423,7 @@
                 });
 
                 // Scanner
-                const scan = scanRes.data;
+                const scan = scanRes.data || {};
                 const scannerCont = document.getElementById('unified-scanner');
                 let allSignals = [];
 
@@ -417,9 +431,7 @@
                     (scan[e.id] || []).forEach(s => allSignals.push({...s, type: e.name, color: e.color, sideId: e.id}));
                 });
 
-                // sort: newest first if seen_time present
                 allSignals.sort((a,b) => (b.seen_ts || 0) - (a.seen_ts || 0));
-
                 document.getElementById('scan-count').innerText = `${allSignals.length} STOCKS`;
 
                 if (allSignals.length > 0) {
@@ -518,9 +530,10 @@
             document.getElementById('inp-max-trades').value = cfg.total_trades || 5;
             document.getElementById('inp-risk').value = cfg.risk_trade_1 || 2000;
 
+            // ✅ FIX: backend uses trade_start/trade_end (not *_time)
             if (isBreakoutSide(side)) {
-                document.getElementById('inp-start').value = cfg.trade_start_time || '09:15';
-                document.getElementById('inp-end').value = cfg.trade_end_time || '15:10';
+                document.getElementById('inp-start').value = cfg.trade_start || '09:15';
+                document.getElementById('inp-end').value = cfg.trade_end || '15:10';
             }
 
             const container = document.getElementById('volume-levels-container');
@@ -568,9 +581,10 @@
                 volume_criteria: matrix
             };
 
+            // ✅ FIX: backend uses trade_start/trade_end (not *_time)
             if (isBreakoutSide(currentEngineSide)) {
-                payload.trade_start_time = document.getElementById('inp-start').value || '09:15';
-                payload.trade_end_time = document.getElementById('inp-end').value || '15:10';
+                payload.trade_start = document.getElementById('inp-start').value || '09:15';
+                payload.trade_end = document.getElementById('inp-end').value || '15:10';
             }
 
             await axios.post(`/api/settings/engine/${currentEngineSide}`, payload);
