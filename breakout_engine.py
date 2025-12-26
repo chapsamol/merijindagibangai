@@ -227,44 +227,7 @@ class BreakoutEngine:
             logger.info(f"✅ [BRK-QUALIFIED] {symbol} BEAR trigger@{low:.2f} {detail}")
             return
 
-    # -----------------------------
-    # VOLUME MATRIX
-    # -----------------------------
-    # @staticmethod
-    # async def check_vol_matrix(stock: dict, candle: dict, side: str, state: dict) -> Tuple[bool, str]:
-    #     cfg = state["config"].get(side, {}) or {}
-    #     matrix = cfg.get("volume_criteria", []) or []
-
-    #     c_vol = int(candle.get("volume", 0) or 0)
-    #     s_sma = float(stock.get("sma", 0) or 0)
-    #     close = float(candle.get("close", 0) or 0)
-    #     c_val_cr = (c_vol * close) / 10000000.0 if close > 0 else 0.0
-
-    #     if not matrix:
-    #         return True, "NoMatrix"
-
-    #     tier_found = None
-    #     for i, level in enumerate(matrix):
-    #         try:
-    #             min_sma_avg = float(level.get("min_sma_avg", 0) or 0)
-    #         except Exception:
-    #             min_sma_avg = 0.0
-
-    #         if s_sma >= min_sma_avg:
-    #             tier_found = (i, level)
-    #         else:
-    #             break
-
-    #     if not tier_found:
-    #         return False, f"SMA {s_sma:,.0f} too low"
-
-    #     idx, level = tier_found
-    #     required_vol = s_sma * float(level.get("sma_multiplier", 1.0) or 1.0)
-    #     min_cr = float(level.get("min_vol_price_cr", 0) or 0)
-
-    #     if c_vol >= required_vol and c_val_cr >= min_cr:
-    #         return True, f"Tier{idx+1}Pass"
-    #     return False, f"Tier{idx+1}Fail (Vol/Value)"
+    
     @staticmethod
     async def check_vol_matrix(stock: dict, candle: dict, side: str, state: dict):
         cfg = state["config"].get(side, {})
