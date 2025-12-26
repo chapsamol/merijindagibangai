@@ -24,13 +24,18 @@ from momentum_engine import MomentumEngine
 try:
     from twisted.internet import reactor  # type: ignore
     _original_run = reactor.run
+
     def _patched_reactor_run(*args, **kwargs):
         kwargs["installSignalHandlers"] = False
         return _original_run(*args, **kwargs)
+
     reactor.run = _patched_reactor_run
 except Exception:
     pass
 
+# -----------------------------
+# LOGGING / TIMEZONE
+# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [MAIN] %(message)s",
@@ -39,7 +44,10 @@ logging.basicConfig(
 logger = logging.getLogger("Nexus_Main")
 IST = pytz.timezone("Asia/Kolkata")
 
-app = FastAPI(title="Nexus Core", version="2.5.0", strict_slashes=False)
+# -----------------------------
+# FASTAPI APP
+# -----------------------------
+app = FastAPI(title="Nexus Core", version="2.7.0", strict_slashes=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,7 +58,28 @@ app.add_middleware(
 )
 
 # -----------------------------
-# RAM STATE (Latched for Parallelism)
+# DEFAULTS
+# -----------------------------
+def _default_volume_matrix() -> list:
+    multipliers = [20, 18, 16, 14, 12, 10, 8, 6, 4, 2]
+    out = []
+    for i in range(10):
+        out.append({
+            "min_vol_price_cr": float(i + 1),
+            "sma_multiplier": float(multipliers[i]),
+            "min_sma_avg": int(1000),
+        })
+    return out
+
+DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
+    "bull": {"risk_reward": "1:2", "trailing_sl": "1:1.5", "total_trades": 5, "risk_trade_1": 2000, "volume_criteria": _default_volume_matrix(), "trade_start": "09:15", "trade_end": "15:10"},
+    "bear": {"risk_reward": "1:2", "trailing_sl": "1:1.5", "total_trades": 5, "risk_trade_1": 2000, "volume_criteria": _default_volume_matrix(), "trade_start": "09:15", "trade_end": "15:10"},
+    "mom_bull": {"risk_reward": "1:2", "trailing_sl": "1:1.5", "total_trades": 5, "risk_trade_1": 2000, "volume_criteria": _default_volume_matrix(), "trade_start": "09:15", "trade_end": "09:17"},
+    "mom_bear": {"risk_reward": "1:2", "trailing_sl": "1:1.5", "total_trades": 5, "risk_trade_1": 2000, "volume_criteria": _default_volume_matrix(), "trade_start": "09:15", "trade_end": "09:17"},
+}
+
+# -----------------------------
+# GLOBAL RAM STATE
 # -----------------------------
 RAM_STATE: Dict[str, Any] = {
     "main_loop": None,
@@ -63,16 +92,18 @@ RAM_STATE: Dict[str, Any] = {
     "stocks": {},
     "trades": {"bull": [], "bear": [], "mom_bull": [], "mom_bear": []},
     "engine_live": {"bull": True, "bear": True, "mom_bull": True, "mom_bear": True},
-    "config": {"bull": {}, "bear": {}, "mom_bull": {}, "mom_bear": {}},
+    "config": {k: dict(v) for k, v in DEFAULT_CONFIG.items()},
+    "manual_exits": set(),
     "data_connected": {"breakout": False, "momentum": False},
 
-    # ---- NEW Parallel Infra ----
+    # Parallel Processing Infrastructure
     "token_locks": defaultdict(asyncio.Lock),
-    "engine_sem": asyncio.Semaphore(500), # Limits concurrent engine instances
-    "inflight": set(),                    # Tracks active tasks
-    "max_inflight": 5000,                 # Backpressure limit
-    "candle_close_queue": None,           # Decoupled strategy logic
+    "engine_sem": None, 
+    "inflight": set(),
+    "max_inflight": 5000,
+    "candle_close_queue": None,
     "tick_batches_dropped": 0,
+    "tick_batches_enqueued": 0,
 }
 
 # -----------------------------
@@ -81,6 +112,14 @@ RAM_STATE: Dict[str, Any] = {
 def _now_ist() -> datetime:
     return datetime.now(IST)
 
+def _safe_float(x, default=0.0) -> float:
+    try: return float(x)
+    except: return default
+
+def _safe_int(x, default=0) -> int:
+    try: return int(x)
+    except: return default
+
 def _compute_pnl() -> Dict[str, float]:
     pnl = {k: 0.0 for k in ["bull", "bear", "mom_bull", "mom_bear"]}
     for side in pnl:
@@ -88,11 +127,13 @@ def _compute_pnl() -> Dict[str, float]:
     pnl["total"] = float(sum(pnl[s] for s in ["bull", "bear", "mom_bull", "mom_bear"]))
     return pnl
 
+def _trade_is_open(t: dict) -> bool:
+    return str(t.get("status", "OPEN")).upper() == "OPEN"
+
 # -----------------------------
-# LATENCY FIX: CENTRALIZED CANDLE AGGREGATION
+# LATENCY FIX: CENTRALIZED CANDLE AGGREGATOR
 # -----------------------------
 def _update_1m_candle(stock: dict, ltp: float, cum_vol: int) -> Optional[dict]:
-    """Decoupled from engine logic to ensure tick hot-path is never blocked."""
     now = _now_ist()
     bucket = now.replace(second=0, microsecond=0)
     c = stock.get("candle_1m")
@@ -118,69 +159,56 @@ def _update_1m_candle(stock: dict, ltp: float, cum_vol: int) -> Optional[dict]:
     return None
 
 # -----------------------------
-# LATENCY FIX: PARALLEL TICK PROCESSING
+# LATENCY FIX: PARALLEL TICK PIPELINE
 # -----------------------------
-async def _process_tick_task(token: int, ltp: float, cum_vol: int):
-    """Execution logic for a single tick, run in parallel."""
+async def _process_tick_task(token: int, ltp: float, vol: int):
     sem = RAM_STATE["engine_sem"]
     lock = RAM_STATE["token_locks"][token]
-
     async with sem:
         async with lock:
             stock = RAM_STATE["stocks"].get(token)
             if not stock: return
             stock["ltp"] = ltp
+            stock["last_update_ts"] = time.time()
 
             # 1. Update Candle (Fast)
-            closed = _update_1m_candle(stock, ltp, cum_vol)
+            closed = _update_1m_candle(stock, ltp, vol)
             if closed:
-                # Offload to candle worker so tick processing doesn't wait for strategy math
                 RAM_STATE["candle_close_queue"].put_nowait((token, closed))
 
-            # 2. Run Engines (Parallel)
+            # 2. Parallel Engine Run
             await asyncio.gather(
-                BreakoutEngine.run(token, ltp, cum_vol, RAM_STATE),
-                MomentumEngine.run(token, ltp, cum_vol, RAM_STATE),
+                BreakoutEngine.run(token, ltp, vol, RAM_STATE),
+                MomentumEngine.run(token, ltp, vol, RAM_STATE),
                 return_exceptions=True
             )
 
 async def tick_worker_parallel():
-    """Consumes batches and spawns individual tasks for parallel execution."""
     q = RAM_STATE["tick_queue"]
     inflight = RAM_STATE["inflight"]
-    max_inflight = RAM_STATE["max_inflight"]
-
+    logger.info("🧵 Parallel Tick Worker: Active")
     while True:
         ticks = await q.get()
         try:
-            # Backpressure: If we have too many active tasks, wait for some to finish
-            if len(inflight) >= max_inflight:
+            if len(inflight) >= RAM_STATE["max_inflight"]:
                 done, _ = await asyncio.wait(inflight, return_when=asyncio.FIRST_COMPLETED)
                 inflight.difference_update(done)
 
             for tick in ticks:
                 token = tick.get("instrument_token")
-                ltp = tick.get("last_price")
-                vol = tick.get("volume_traded")
-                if not token or not ltp: continue
-
-                # Spawn parallel task
-                task = asyncio.create_task(_process_tick_task(token, ltp, vol))
+                if not token: continue
+                task = asyncio.create_task(_process_tick_task(token, tick.get("last_price", 0), tick.get("volume_traded", 0)))
                 inflight.add(task)
                 task.add_done_callback(inflight.discard)
-
-        except Exception as e:
-            logger.error(f"Tick Worker Error: {e}")
         finally:
             q.task_done()
 
 async def candle_worker():
-    """Handles heavy strategy calculations when a 1m candle closes."""
     cq = RAM_STATE["candle_close_queue"]
+    logger.info("🕯️ Background Candle Worker: Active")
     while True:
         token, candle = await cq.get()
         try:
-            # We use the same per-token lock to ensure state safety
             async with RAM_STATE["token_locks"][token]:
                 await asyncio.gather(
                     BreakoutEngine.on_candle_close(token, candle, RAM_STATE),
@@ -191,7 +219,7 @@ async def candle_worker():
             cq.task_done()
 
 # -----------------------------
-# KITE CALLBACKS
+# KITE WebSocket Handlers
 # -----------------------------
 def on_ticks(ws, ticks):
     loop = RAM_STATE.get("main_loop")
@@ -200,8 +228,9 @@ def on_ticks(ws, ticks):
         def _put():
             try:
                 q.put_nowait(ticks)
+                RAM_STATE["tick_batches_enqueued"] += 1
             except asyncio.QueueFull:
-                try: # Drop oldest to keep system current (Fast Lane)
+                try:
                     q.get_nowait()
                     q.put_nowait(ticks)
                     RAM_STATE["tick_batches_dropped"] += 1
@@ -213,46 +242,129 @@ def on_connect(ws, response):
     if tokens:
         ws.subscribe(tokens)
         ws.set_mode(ws.MODE_FULL, tokens)
+        logger.info(f"📡 WS Connected: Subscribed {len(tokens)} tokens")
         RAM_STATE["data_connected"] = {"breakout": True, "momentum": True}
 
 # -----------------------------
-# LIFECYCLE
+# FASTAPI ROUTES (Full Set)
 # -----------------------------
-@app.on_event("startup")
-async def startup_event():
-    RAM_STATE["main_loop"] = asyncio.get_running_loop()
-    RAM_STATE["tick_queue"] = asyncio.Queue(maxsize=5000)
-    RAM_STATE["candle_close_queue"] = asyncio.Queue(maxsize=1000)
-    
-    # Start specialized workers
-    asyncio.create_task(tick_worker_parallel())
-    asyncio.create_task(candle_worker())
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    try: return FileResponse("index.html")
+    except: return HTMLResponse("<h3>Dashboard file missing</h3>")
 
-    # Load Data from Redis
-    api_key, api_secret = await TradeControl.get_config()
-    token = await TradeControl.get_access_token()
-    RAM_STATE.update({"api_key": api_key, "api_secret": api_secret, "access_token": token})
-
-    market_data = await TradeControl.get_all_market_data()
-    for t, data in market_data.items():
-        RAM_STATE["stocks"][int(t)] = {**data, "ltp": 0, "candle_1m": None, "brk_status": "WAITING", "mom_status": "WAITING"}
-
-    # Start KiteTicker
-    if RAM_STATE["api_key"] and RAM_STATE["access_token"]:
-        kws = KiteTicker(RAM_STATE["api_key"], RAM_STATE["access_token"])
-        kws.on_ticks, kws.on_connect = on_ticks, on_connect
-        kws.connect(threaded=True)
-        RAM_STATE["kws"] = kws
+@app.get("/login")
+@app.get("/login/")
+async def login(request_token: Optional[str] = Query(None)):
+    api_key = RAM_STATE["api_key"] or os.getenv("KITE_API_KEY")
+    api_secret = RAM_STATE["api_secret"] or os.getenv("KITE_API_SECRET")
+    if not request_token:
+        return RedirectResponse(KiteConnect(api_key=api_key).login_url())
+    try:
+        kite = KiteConnect(api_key=api_key)
+        data = await asyncio.to_thread(kite.generate_session, request_token, api_secret=api_secret)
+        await TradeControl.save_access_token(data["access_token"])
+        RAM_STATE["access_token"] = data["access_token"]
+        RAM_STATE["kite"] = kite
+        RAM_STATE["kite"].set_access_token(data["access_token"])
+        logger.info("✅ Login Success")
+        return RedirectResponse(url="/")
+    except Exception as e:
+        return HTMLResponse(f"<h3>Login Failed: {e}</h3>")
 
 @app.get("/api/stats")
 async def get_stats():
     return {
         "pnl": _compute_pnl(),
-        "queue_lag": RAM_STATE["tick_queue"].qsize(),
-        "inflight_tasks": len(RAM_STATE["inflight"]),
-        "dropped_batches": RAM_STATE["tick_batches_dropped"],
-        "server_time": _now_ist().strftime("%H:%M:%S")
+        "queue": RAM_STATE["tick_queue"].qsize() if RAM_STATE["tick_queue"] else 0,
+        "inflight": len(RAM_STATE["inflight"]),
+        "dropped": RAM_STATE["tick_batches_dropped"],
+        "server_time": _now_ist().strftime("%H:%M:%S"),
+        "engine_status": {k: "1" if v else "0" for k, v in RAM_STATE["engine_live"].items()},
+        "data_connected": RAM_STATE["data_connected"]
     }
 
-@app.get("/")
-async def home(): return FileResponse("index.html")
+@app.get("/api/orders")
+async def get_orders(open_only: int = 0):
+    if not open_only: return RAM_STATE["trades"]
+    return {side: [t for t in arr if _trade_is_open(t)] for side, arr in RAM_STATE["trades"].items()}
+
+@app.get("/api/scanner")
+async def get_scanner():
+    signals = {side: [] for side in ["bull", "bear", "mom_bull", "mom_bear"]}
+    for _, s in RAM_STATE["stocks"].items():
+        for p in ["brk", "mom"]:
+            if s.get(f"{p}_status") == "TRIGGER_WATCH":
+                side = s.get(f"{p}_side_latch")
+                if side in signals:
+                    signals[side].append({
+                        "symbol": s["symbol"],
+                        "trigger_px": s.get(f"{p}_trigger_px"),
+                        "seen_time": s.get(f"{p}_scan_seen_time") or _now_ist().strftime("%H:%M:%S")
+                    })
+    return signals
+
+@app.get("/api/settings/engine/{side}")
+async def get_settings(side: str):
+    return RAM_STATE["config"].get(side, {})
+
+@app.post("/api/settings/engine/{side}")
+async def save_settings(side: str, data: Dict[str, Any]):
+    if side in RAM_STATE["config"]:
+        RAM_STATE["config"][side].update(data)
+        await TradeControl.save_strategy_settings(side, RAM_STATE["config"][side])
+    return {"status": "success"}
+
+@app.post("/api/control")
+async def control(request: Request):
+    data = await request.json()
+    action = data.get("action")
+    if action == "toggle_engine":
+        side, enabled = data.get("side"), data.get("enabled")
+        if side in RAM_STATE["engine_live"]: RAM_STATE["engine_live"][side] = bool(enabled)
+    elif action == "square_off_one":
+        symbol, side = data.get("symbol"), data.get("side")
+        stock = next((s for s in RAM_STATE["stocks"].values() if s["symbol"] == symbol), None)
+        if stock:
+            if "mom" in side: await MomentumEngine.close_position(stock, RAM_STATE, "USER_EXIT")
+            else: await BreakoutEngine.close_position(stock, RAM_STATE, "USER_EXIT")
+    return {"status": "ok"}
+
+# -----------------------------
+# STARTUP EVENT
+# -----------------------------
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🚀 System Startup")
+    RAM_STATE["main_loop"] = asyncio.get_running_loop()
+    RAM_STATE["tick_queue"] = asyncio.Queue(maxsize=10000)
+    RAM_STATE["candle_close_queue"] = asyncio.Queue(maxsize=2000)
+    RAM_STATE["engine_sem"] = asyncio.Semaphore(500)
+    
+    asyncio.create_task(tick_worker_parallel())
+    asyncio.create_task(candle_worker())
+
+    # Auth & Config Restoration
+    api_key, api_secret = await TradeControl.get_config()
+    token = await TradeControl.get_access_token()
+    RAM_STATE.update({"api_key": api_key, "api_secret": api_secret, "access_token": token})
+
+    # Load Universe
+    market_data = await TradeControl.get_all_market_data()
+    for t_str, data in market_data.items():
+        t_id = int(t_str)
+        RAM_STATE["stocks"][t_id] = {**data, "token": t_id, "ltp": 0.0, "brk_status": "WAITING", "mom_status": "WAITING", "candle_1m": None}
+
+    # Connect WebSocket
+    if RAM_STATE["api_key"] and RAM_STATE["access_token"]:
+        try:
+            kws = KiteTicker(RAM_STATE["api_key"], RAM_STATE["access_token"])
+            kws.on_ticks, kws.on_connect = on_ticks, on_connect
+            kws.connect(threaded=True)
+            RAM_STATE["kws"] = kws
+        except Exception as e:
+            logger.error(f"WS Error: {e}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    if RAM_STATE["kws"]: RAM_STATE["kws"].close()
