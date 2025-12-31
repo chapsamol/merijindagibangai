@@ -178,12 +178,18 @@ return 1
 
 
 class TradeControl:
+    # -----------------------------
+    # CONFIG (kept for dashboard compatibility)
+    # api_key    -> DHAN_CLIENT_ID
+    # api_secret -> DHAN_ACCESS_TOKEN
+    # -----------------------------
     @staticmethod
     async def save_config(api_key: str, api_secret: str) -> bool:
         try:
             r = await get_redis()
             await r.set("nexus:config:api_key", str(api_key or ""))
             await r.set("nexus:config:api_secret", str(api_secret or ""))
+            logger.info("Config saved successfully to Redis.")
             return True
         except Exception as e:
             logger.error(f"Failed to save api config: {e}")
@@ -193,11 +199,16 @@ class TradeControl:
     async def get_config() -> Tuple[str, str]:
         try:
             r = await get_redis()
-            k = await r.get("nexus:config:api_key") or ""
-            s = await r.get("nexus:config:api_secret") or ""
-            return str(k), str(s)
+            k = await r.get("nexus:config:api_key")
+            s = await r.get("nexus:config:api_secret")
+            
+            # Use empty string if None, but keep the values if they exist
+            k_val = str(k) if k is not None else ""
+            s_val = str(s) if s is not None else ""
+            
+            return k_val, s_val
         except Exception as e:
-            logger.error(f"Failed to get api config: {e}")
+            logger.error(f"Failed to get api config from Redis: {e}")
             return "", ""
 
     @staticmethod
@@ -223,7 +234,8 @@ class TradeControl:
     async def get_access_token() -> str:
         try:
             r = await get_redis()
-            return str(await r.get("nexus:auth:access_token") or "")
+            val = await r.get("nexus:auth:access_token")
+            return str(val) if val is not None else ""
         except Exception as e:
             logger.error(f"Failed to get access token: {e}")
             return ""
@@ -293,7 +305,8 @@ class TradeControl:
     async def get_last_sync() -> str:
         try:
             r = await get_redis()
-            return str(await r.get("nexus:sync:last") or "")
+            val = await r.get("nexus:sync:last")
+            return str(val) if val is not None else ""
         except Exception as e:
             logger.error(f"Failed to get last sync: {e}")
             return ""
