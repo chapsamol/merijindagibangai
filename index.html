@@ -291,6 +291,18 @@
     function tvLink(symbol) { return `https://www.tradingview.com/chart/?symbol=NSE:${encodeURIComponent(symbol)}`; }
     function fmt2(n) { return (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '--'; }
 
+    // -----------------------------
+    // FIX: prevent UI sync loop from fighting toggle clicks
+    // -----------------------------
+    const toggleInFlight = { bull: false, mom_bull: false, bear: false, mom_bear: false };
+
+    function isOnValue(v) {
+      if (v === true) return true;
+      if (v === 1) return true;
+      if (typeof v === "string") return v === "1" || v.toLowerCase() === "true";
+      return false;
+    }
+
     function defaultMatrix() {
       const mult = [20,18,16,14,12,10,8,6,4,2];
       return Array.from({length: 10}, (_, i) => ({
@@ -433,11 +445,13 @@
         ou.innerText = ouOn ? 'Connected' : 'Disconnected';
         ou.className = `text-[10px] font-mono font-bold uppercase ${ouOn ? 'text-emerald-500' : 'text-rose-400'}`;
 
+        // FIX: robust parse + don't overwrite toggles while in-flight
         engineMap.forEach(e => {
-          const on = stats.engine_status?.[e.id] === "1";
+          const on = isOnValue(stats.engine_status?.[e.id]);
           const pnl = stats.pnl?.[e.id] || 0;
           const toggle = document.getElementById(`toggle-${e.id}`);
-          if (toggle) toggle.checked = !!on;
+          if (toggle && !toggleInFlight[e.id]) toggle.checked = !!on;
+
           const el = document.getElementById(`${e.id}-pnl-side`);
           if (el) {
             el.innerText = Number(pnl).toFixed(2);
@@ -511,10 +525,42 @@
       }
     }
 
+    // FIX: robust toggle + no-sync-fight + revert on failure
     async function handleToggle(side) {
-      const enabled = document.getElementById(`toggle-${side}`).checked;
-      await axios.post('/api/control', { action: 'toggle_engine', side, enabled });
-      addLog(`ENGINE: ${side.toUpperCase()} -> ${enabled ? 'ONLINE' : 'OFFLINE'}`);
+      const toggle = document.getElementById(`toggle-${side}`);
+      if (!toggle) return;
+
+      const enabled = !!toggle.checked;
+
+      toggleInFlight[side] = true;
+      toggle.disabled = true;
+
+      try {
+        const payload = {
+          action: 'toggle_engine',
+          side,
+          enabled,                       // boolean
+          enabled_str: enabled ? "1" : "0",
+          enabled_int: enabled ? 1 : 0
+        };
+
+        const res = await axios.post('/api/control', payload);
+        const data = res?.data || {};
+
+        // If backend returns engine_status, enforce it
+        if (data.engine_status && data.engine_status[side] !== undefined) {
+          toggle.checked = isOnValue(data.engine_status[side]);
+        }
+
+        addLog(`ENGINE: ${side.toUpperCase()} -> ${toggle.checked ? 'ONLINE' : 'OFFLINE'}`);
+      } catch (e) {
+        toggle.checked = !enabled;
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`ENGINE TOGGLE FAILED (${side}): ${msg}`);
+      } finally {
+        toggleInFlight[side] = false;
+        toggle.disabled = false;
+      }
     }
 
     async function squareOffOne(side, symbol) {
@@ -553,7 +599,7 @@
       lucide.createIcons();
     }
 
-    // FIXED: Corrected the ID selector to match HTML id="dhan-access-token"
+    // FIX: correct selector + better error logging
     async function saveBrokerCreds() {
       const client_id = document.getElementById('dhan-client-id').value.trim();
       const access_token = document.getElementById('dhan-access-token').value.trim();
@@ -580,7 +626,8 @@
           addLog("AUTH ERROR: Save failed on backend.");
         }
       } catch (e) {
-        addLog(`AUTH ERROR: Network or API failure.`);
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`AUTH ERROR: ${msg}`);
       }
     }
 
