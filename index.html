@@ -273,8 +273,6 @@
   <script>
     let currentEngineSide = null;
 
-    // Tailwind CDN does NOT support dynamic class generation like `border-${color}-500`.
-    // So we use explicit styles for color.
     const colorTheme = {
       emerald: { dot: '#10b981', border: 'rgba(16,185,129,0.65)', text: '#34d399' },
       blue:    { dot: '#3b82f6', border: 'rgba(59,130,246,0.65)',  text: '#60a5fa' },
@@ -506,15 +504,6 @@
       } catch (e) {
         setBadge('sync-health', 'badge-bad', 'SYNC FAIL');
         setUiSync(false, 'Sync OFF');
-
-        const feed = document.getElementById('feed-status');
-        feed.innerText = 'Disconnected';
-        feed.className = 'text-[10px] font-mono font-bold uppercase text-rose-400';
-
-        const ou = document.getElementById('ou-status');
-        ou.innerText = 'Disconnected';
-        ou.className = 'text-[10px] font-mono font-bold uppercase text-rose-400';
-
         const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
         addLog(`SYNC ERROR: ${msg}`);
       } finally {
@@ -546,13 +535,10 @@
       }
     }
 
-    // Fetch broker creds from backend (Redis)
     async function openApiModal() {
       try {
         const res = await axios.get('/api/config/auth');
         const data = res.data || {};
-
-        // Support both formats
         const clientId = data.client_id || data.api_key || "";
         const accessToken = data.access_token || data.api_secret || "";
 
@@ -561,19 +547,23 @@
 
         addLog("AUTH: Fetched credentials from Redis.");
       } catch (e) {
-        addLog("AUTH: Fetch failed (check /api/config/auth).");
+        addLog("AUTH: Fetch failed.");
       }
       document.getElementById('api-modal').classList.remove('hidden');
       lucide.createIcons();
     }
 
-    // Save broker creds to backend
+    // FIXED: Corrected the ID selector to match HTML id="dhan-access-token"
     async function saveBrokerCreds() {
       const client_id = document.getElementById('dhan-client-id').value.trim();
       const access_token = document.getElementById('dhan-access-token').value.trim();
 
+      if (!client_id || !access_token) {
+        addLog("AUTH ERROR: Both Client ID and Token are required.");
+        return;
+      }
+
       try {
-        // Backend in our main.py expects api_key/api_secret
         const res = await axios.post('/api/control', {
           action: 'save_api',
           broker: 'dhan',
@@ -584,13 +574,13 @@
         });
 
         if ((res.data && res.data.status === "success") || res.status === 200) {
-          addLog("AUTH: Saved to Redis.");
+          addLog("AUTH: Saved to Redis successfully.");
           document.getElementById('api-modal').classList.add('hidden');
         } else {
-          addLog("AUTH ERROR: Save failed.");
+          addLog("AUTH ERROR: Save failed on backend.");
         }
       } catch (e) {
-        addLog("AUTH ERROR: Save failed.");
+        addLog(`AUTH ERROR: Network or API failure.`);
       }
     }
 
