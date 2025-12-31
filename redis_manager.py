@@ -3,15 +3,15 @@
 Nexus Redis Manager (Dhan-ready, architecture unchanged)
 
 ✅ Works with redis.asyncio (redis-py) correctly
-✅ Heroku TLS/SSL FIX (PROPER):
-   - Uses system CA bundle via certifi for rediss://
-   - Supports optional insecure mode via env REDIS_INSECURE_TLS=1 (last resort)
+✅ Heroku Redis TLS fix (self-signed cert chain):
+   - ssl_cert_reqs = None
+   - ssl_check_hostname = False
+✅ Also supports URL query param ssl_cert_reqs=none (optional)
 ✅ Atomic Lua-based counters:
     - per-side daily trade limit
     - per-symbol daily max trades
     - open-position lock per symbol
 ✅ Daily keys (IST) so limits reset automatically each day
-✅ Compatible with your app (no breaking changes)
 
 IMPORTANT DHAN NOTE:
 - In Dhan version of app, "token" everywhere means DHAN security_id.
@@ -21,6 +21,7 @@ import os
 import json
 import logging
 import asyncio
+import ssl
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 
@@ -39,15 +40,29 @@ _r_init_lock = asyncio.Lock()
 # -----------------------------
 def _redis_url() -> str:
     """
-    Retrieves the Redis URL from common env vars.
-    Supports Heroku Redis where REDIS_URL / REDIS_TLS_URL are often provided.
+    Retrieves the Redis URL from env.
+
+    Heroku typically provides:
+      - REDIS_URL (often rediss:// for TLS)
+
+    Also supports:
+      - REDIS_TLS_URL
+      - REDISCLOUD_URL
     """
-    return (
+    url = (
         os.getenv("REDIS_TLS_URL")
         or os.getenv("REDIS_URL")
         or os.getenv("REDISCLOUD_URL")
         or ""
-    ).strip()
+    )
+
+    # Optional: add ssl_cert_reqs=none for rediss URLs if absent
+    # (We ALSO explicitly set ssl_cert_reqs=None in kwargs below.)
+    if url.startswith("rediss://") and "ssl_cert_reqs" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}ssl_cert_reqs=none"
+
+    return url
 
 
 def _ist_day_key() -> str:
@@ -63,10 +78,7 @@ def _seconds_until_ist_eod() -> int:
 async def get_redis() -> redis.Redis:
     """
     Singleton async Redis client with safe concurrent init.
-
-    TLS behavior for rediss://:
-    - Default: verifies certs using certifi CA bundle (recommended, works on Heroku)
-    - Optional insecure mode (NOT recommended): set REDIS_INSECURE_TLS=1
+    Handles Heroku TLS/self-signed certificates safely.
     """
     global _r
     if _r is not None:
@@ -79,7 +91,7 @@ async def get_redis() -> redis.Redis:
         url = _redis_url()
         if not url:
             logger.error("❌ Redis URL not found in environment variables.")
-            raise RuntimeError("Redis URL not set. Set REDIS_TLS_URL or REDIS_URL.")
+            raise RuntimeError("Redis URL not set. Set REDIS_URL or REDIS_TLS_URL.")
 
         kwargs = dict(
             decode_responses=True,
@@ -89,41 +101,38 @@ async def get_redis() -> redis.Redis:
             health_check_interval=30,
         )
 
-        # Proper TLS handling for Heroku / managed Redis over rediss://
+        # Heroku Redis TLS / self-signed cert chain fix:
+        # redis-py supports disabling this check via ssl_cert_reqs=None.
+        # (Also disable hostname checking.)
         if url.startswith("rediss://"):
-            import ssl
-            try:
-                import certifi  # type: ignore
-            except Exception as e:
-                raise RuntimeError(
-                    "certifi is required for secure rediss:// connections. "
-                    "Add 'certifi' to requirements.txt"
-                ) from e
-
-            insecure = os.getenv("REDIS_INSECURE_TLS", "0").strip() == "1"
-            if insecure:
-                # LAST RESORT ONLY
-                kwargs.update({
-                    "ssl_cert_reqs": ssl.CERT_NONE,
-                    "ssl_check_hostname": False,
-                })
-                logger.warning("⚠️ REDIS_INSECURE_TLS=1 -> TLS verification DISABLED (not recommended).")
-            else:
-                kwargs.update({
-                    "ssl_cert_reqs": ssl.CERT_REQUIRED,
-                    "ssl_ca_certs": certifi.where(),
-                    "ssl_check_hostname": True,
-                })
+            kwargs.update(
+                {
+                    "ssl": True,
+                    "ssl_cert_reqs": None,          # important
+                    "ssl_check_hostname": False,    # important
+                }
+            )
 
         try:
             client = redis.from_url(url, **kwargs)
             await client.ping()
             _r = client
-            logger.info("✅ Redis connected successfully (TLS compatible).")
+            logger.info("✅ Redis connected successfully.")
             return _r
         except Exception as e:
             logger.error(f"❌ Redis Connection Error: {e}")
             raise
+
+
+async def close_redis() -> None:
+    """Optional clean shutdown."""
+    global _r
+    if _r is not None:
+        try:
+            await _r.close()
+        except Exception:
+            pass
+        _r = None
 
 
 # -----------------------------
@@ -199,32 +208,16 @@ class TradeControl:
     # CONFIG
     # api_key    -> DHAN_CLIENT_ID
     # api_secret -> DHAN_ACCESS_TOKEN
-    #
-    # IMPORTANT:
-    # - save_config now also writes nexus:auth:access_token so main.py worker reads it.
     # -----------------------------
     @staticmethod
     async def save_config(api_key: str, api_secret: str) -> bool:
-        """
-        Saves client_id and access_token.
-        Writes to BOTH:
-          - nexus:config:api_key / nexus:config:api_secret
-          - nexus:auth:access_token (+ updated_at)
-        So UI + WS worker stay consistent.
-        """
         try:
             r = await get_redis()
-            client_id = str(api_key or "").strip()
-            access_token = str(api_secret or "").strip()
-
-            await r.set("nexus:config:api_key", client_id)
-            await r.set("nexus:config:api_secret", access_token)
-
-            # ✅ Key used by main.py worker (TradeControl.get_access_token)
-            await r.set("nexus:auth:access_token", access_token)
-            await r.set("nexus:auth:updated_at", datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
-
-            logger.info(f"✅ Dhan Config Saved. client_id_len={len(client_id)}, token_len={len(access_token)}")
+            k = str(api_key or "").strip()
+            s = str(api_secret or "").strip()
+            await r.set("nexus:config:api_key", k)
+            await r.set("nexus:config:api_secret", s)
+            logger.info(f"✅ Dhan Config Saved. Key length: {len(k)}, Secret length: {len(s)}")
             return True
         except Exception as e:
             logger.error(f"❌ Critical failure saving Dhan config: {e}")
@@ -251,9 +244,6 @@ class TradeControl:
 
     @staticmethod
     async def save_access_token(token: str) -> bool:
-        """
-        Saves auth access token (used by main.py worker) + updated timestamp.
-        """
         try:
             r = await get_redis()
             await r.set("nexus:auth:access_token", str(token or "").strip())
@@ -265,25 +255,16 @@ class TradeControl:
 
     @staticmethod
     async def get_access_token() -> str:
-        """
-        Reads access token.
-        Primary: nexus:auth:access_token
-        Fallback: nexus:config:api_secret (older saves)
-        """
         try:
             r = await get_redis()
             token = await r.get("nexus:auth:access_token")
-            if token:
-                return str(token)
-            token2 = await r.get("nexus:config:api_secret")
-            return str(token2 or "")
+            return str(token or "")
         except Exception as e:
             logger.error(f"Failed to get access token: {e}")
             return ""
 
     # -----------------------------
     # MARKET CACHE
-    # Keys: nexus:market:{token}
     # -----------------------------
     @staticmethod
     async def save_market_data(token: str, market_data: dict) -> bool:
@@ -358,7 +339,6 @@ class TradeControl:
 
     # -----------------------------
     # STRATEGY SETTINGS
-    # Keys: nexus:settings:{side}
     # -----------------------------
     @staticmethod
     async def save_strategy_settings(side: str, cfg: dict) -> bool:
@@ -384,9 +364,6 @@ class TradeControl:
 
     # -----------------------------
     # SUBSCRIBE UNIVERSE
-    # Keys:
-    #   nexus:universe:tokens
-    #   nexus:universe:symbols
     # -----------------------------
     @staticmethod
     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:

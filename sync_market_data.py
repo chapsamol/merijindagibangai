@@ -1,23 +1,36 @@
 """
-Nexus Async Market Data Sync (Dhan)
+Nexus Async Market Data Sync (Dhan) - FULL FIXED (Heroku Redis friendly)
 
-Fixes included:
-- Removes datetime.utcfromtimestamp() DeprecationWarning (Py3.12+)
-- Live progress logging while syncing (so it never looks "stuck")
-- Robust retry + exponential backoff on HTTP 429 / 5xx / transient failures
-- Global rate-limiter so concurrency doesn't instantly trigger 429
-- Safer persistence: by default DOES NOT delete old Redis market data on API errors
-- Reads access token from BOTH places:
-    1) nexus:auth:access_token (TradeControl.get_access_token)
-    2) nexus:config:api_secret (TradeControl.get_config fallback)
+What this version fixes / improves:
+✅ Works on Heroku (reads REDIS_URL automatically on dyno)
+✅ Works locally too (supports .env, CLI args, and env fallbacks)
+✅ Clear early error if REDIS_URL missing (with exact fix steps)
+✅ Keeps your STOCK_INDEX_MAPPING exactly as you pasted (you can paste full 1490 dict)
+✅ Robust retry + backoff for 429/5xx/transient
+✅ Global async rate limiter
+✅ Live progress logging
+✅ Safer persistence: does NOT delete old Redis market data on API errors (default)
+✅ Reads DHAN creds from BOTH:
+   - Redis (nexus:config:api_key + nexus:auth:access_token or nexus:config:api_secret)
+   - OR environment variables fallback (DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN)
 
-NEW FIXES (2025-12-31):
-- Works with updated redis_manager TLS logic (secure by default, optional insecure)
-- Adds client-id header for Dhan (many endpoints require it)
-- Instrument list downloader supports BOTH:
-    - CSV scrip master
-    - JSON /v2/instruments endpoints (previous version assumed CSV only)
-- More defensive parsing of historical response (supports nested payloads)
+USAGE (Heroku dyno):
+  python sync_market_data.py
+
+USAGE (Local):
+  1) heroku config:get REDIS_URL -a <app>   (copy it)
+  2) set it:
+       export REDIS_URL="rediss://:pass@host:port"   (Git Bash)
+     OR run:
+       python sync_market_data.py --redis-url "rediss://:pass@host:port"
+  3) ensure DHAN creds exist in Redis OR set env:
+       export DHAN_CLIENT_ID="..."
+       export DHAN_ACCESS_TOKEN="..."
+
+NOTE:
+- This file depends on your redis_manager.py (TradeControl) being present.
+- If you are using Heroku Redis TLS and see certificate issues, ensure your redis_manager.py
+  uses ssl_cert_reqs=None and ssl_check_hostname=False for rediss:// (I already gave that fix).
 """
 
 import asyncio
@@ -27,9 +40,11 @@ import json
 import csv
 import io
 import random
+import argparse
 from datetime import datetime, timedelta, date, timezone
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional
 from urllib import request, error
+from urllib.parse import urlparse
 
 import pytz
 from redis_manager import TradeControl
@@ -45,29 +60,73 @@ logging.basicConfig(
 logger = logging.getLogger("Sync_Command_Dhan")
 IST = pytz.timezone("Asia/Kolkata")
 
+
 # -----------------------------
-# FILTERS / TUNING
+# .env loader (no extra dependency)
+# -----------------------------
+def _load_dotenv_simple(path: str = ".env") -> None:
+    """
+    Tiny .env loader:
+      KEY=VALUE
+      # comments allowed
+    Does not override already-set environment variables.
+    """
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception as e:
+        logger.warning(f"Could not load .env ({path}): {e}")
+
+
+def _redact_redis_url(u: str) -> str:
+    """
+    Redact password but show scheme+host+port for debugging.
+    """
+    try:
+        p = urlparse(u)
+        host = p.hostname or ""
+        port = p.port or ""
+        scheme = p.scheme or ""
+        return f"{scheme}://{host}:{port}"
+    except Exception:
+        return "<invalid-url>"
+
+
+def _has_redis_url() -> bool:
+    return bool(
+        os.getenv("REDIS_TLS_URL")
+        or os.getenv("REDIS_URL")
+        or os.getenv("REDISCLOUD_URL")
+    )
+
+
+# -----------------------------
+# DEFAULT FILTERS / TUNING (overridable by env)
 # -----------------------------
 MIN_VOL_SMA = int(os.getenv("MIN_VOL_SMA", "1000"))
-
 MAX_CONCURRENCY = int(os.getenv("SYNC_CONCURRENCY", "3"))
 MIN_REQ_INTERVAL_SEC = float(os.getenv("SYNC_MIN_REQ_INTERVAL_SEC", "0.60"))
 REQ_SLEEP = float(os.getenv("SYNC_SLEEP_SEC", "0.05"))
-
 HIST_LOOKBACK_DAYS = int(os.getenv("HIST_LOOKBACK_DAYS", "20"))  # keep >= 10
 EXCHANGE_SEGMENT = os.getenv("DHAN_EXCHANGE_SEGMENT", "NSE_EQ")
 INSTRUMENT = os.getenv("DHAN_INSTRUMENT", "EQUITY")
-
 PROGRESS_EVERY = int(os.getenv("SYNC_PROGRESS_EVERY", "25"))
 SYNC_LIMIT_SYMBOLS = int(os.getenv("SYNC_LIMIT_SYMBOLS", "0"))
-
 KEEP_OLD_ON_ERROR = os.getenv("SYNC_KEEP_OLD_ON_ERROR", "1") == "1"
-
 MAX_RETRIES = int(os.getenv("SYNC_MAX_RETRIES", "6"))
 BACKOFF_BASE = float(os.getenv("SYNC_BACKOFF_BASE", "0.8"))
 BACKOFF_MAX = float(os.getenv("SYNC_BACKOFF_MAX", "20.0"))
 
-# Instrument list endpoints (try in order)
 DHAN_INSTRUMENT_URLS = [
     os.getenv("DHAN_INSTRUMENTS_URL", "").strip(),
     "https://images.dhan.co/api-data/api-scrip-master.csv",
@@ -76,15 +135,1504 @@ DHAN_INSTRUMENT_URLS = [
 ]
 DHAN_INSTRUMENT_URLS = [u for u in DHAN_INSTRUMENT_URLS if u]
 
-DHAN_BASE = os.getenv("DHAN_BASE_URL", "https://api.dhan.co").rstrip("/")
+DHAN_BASE = os.getenv("DHAN_BASE_URL", "https://api.dhan.co")
 
 # -----------------------------
 # STOCK UNIVERSE (your mapping)
 # -----------------------------
-# !!! KEEP YOUR FULL EXISTING DICT HERE (exactly as-is) !!!
+# IMPORTANT: keep your mapping exactly as-is.
+# You can paste the full 1490 symbol dict here.
 STOCK_INDEX_MAPPING = {
-    # paste your full mapping here (your current dict is fine)
-    # ...
+    'MRF': 'NIFTY 500',
+    '3MINDIA': 'NIFTY 500',
+    'HONAUT': 'NIFTY 500',
+    'ABBOTINDIA': 'NIFTY 500',
+    'JSWHL': 'NIFTY 500',
+    'POWERINDIA': 'NIFTY 500',
+    'PTCIL': 'NIFTY 500',
+    'FORCEMOT': 'NIFTY 500',
+    'NEULANDLAB': 'NIFTY 500',
+    'LMW': 'NIFTY 500',
+    'TVSHLTD': 'NIFTY 500',
+    'MAHSCOOTER': 'NIFTY 500',
+    'ZFCVINDIA': 'NIFTY 500',
+    'PGHH': 'NIFTY 500',
+    'BAJAJHLDNG': 'NIFTY 500',
+    'DYNAMATECH': 'NIFTY 500',
+    'ASTRAZEN': 'NIFTY 500',
+    'APARINDS': 'NIFTY 500',
+    'GILLETTE': 'NIFTY 500',
+    'WENDT': 'NIFTY 500',
+    'TASTYBITE': 'NIFTY 500',
+    'VOLTAMP': 'NIFTY 500',
+    'CRAFTSMAN': 'NIFTY 500',
+    'NSIL': 'NIFTY 500',
+    'ESABINDIA': 'NIFTY 500',
+    'NAVINFLUOR': 'NIFTY 500',
+    'ICRA': 'NIFTY 500',
+    'LINDEINDIA': 'NIFTY 500',
+    'ATUL': 'NIFTY 500',
+    'VSTTILLERS': 'NIFTY 500',
+    'JKCEMENT': 'NIFTY 500',
+    'PGHL': 'NIFTY 500',
+    'LUMAXIND': 'NIFTY 500',
+    'BLUEDART': 'NIFTY 500',
+    'CERA': 'NIFTY 500',
+    'PILANIINVS': 'NIFTY 500',
+    'FOSECOIND': 'NIFTY 500',
+    'VADILALIND': 'NIFTY 500',
+    'KICL': 'NIFTY 500',
+    'PFIZER': 'NIFTY 500',
+    'SUNDARMFIN': 'NIFTY 500',
+    'ORISSAMINE': 'NIFTY 500',
+    'LTTS': 'NIFTY 500',
+    'SANOFICONR': 'NIFTY 500',
+    'CRISIL': 'NIFTY 500',
+    'ECLERX': 'NIFTY 500',
+    'FINEORG': 'NIFTY 500',
+    'BAYERCROP': 'NIFTY 500',
+    'TVSSRICHAK': 'NIFTY 500',
+    'SANOFI': 'NIFTY 500',
+    'SHILCTECH': 'NIFTY 500',
+    'BASF': 'NIFTY 500',
+    'KINGFA': 'NIFTY 500',
+    'SCHAEFFLER': 'NIFTY 500',
+    'SMLMAH': 'NIFTY 500',
+    'AIAENG': 'NIFTY 500',
+    'CEATLTD': 'NIFTY 500',
+    'SWARAJENG': 'NIFTY 500',
+    'GRWRHITECH': 'NIFTY 500',
+    'ESCORTS': 'NIFTY 500',
+    'BANARISUG': 'NIFTY 500',
+    'AKZOINDIA': 'NIFTY 500',
+    'INGERRAND': 'NIFTY 500',
+    'VHL': 'NIFTY 500',
+    'FLUOROCHEM': 'NIFTY 500',
+    'KIRLOSIND': 'NIFTY 500',
+    'KMEW': 'NIFTY 500',
+    'RADICO': 'NIFTY 500',
+    'NETWEB': 'NIFTY 500',
+    'THANGAMAYL': 'NIFTY 500',
+    'SHRIPISTON': 'NIFTY 500',
+    'PRIVISCL': 'NIFTY 500',
+    'TIMKEN': 'NIFTY 500',
+    'GVT&D': 'NIFTY 500',
+    'ETHOSLTD': 'NIFTY 500',
+    'TCPLPACK': 'NIFTY 500',
+    'WAAREEENER': 'NIFTY 500',
+    'ANANDRATHI': 'NIFTY 500',
+    'NDGL': 'NIFTY 500',
+    'ENRIN': 'NIFTY 500',
+    'LALPATHLAB': 'NIFTY 500',
+    'THERMAX': 'NIFTY 500',
+    'GODFRYPHLP': 'NIFTY 500',
+    'BBL': 'NIFTY 500',
+    'CARTRADE': 'NIFTY 500',
+    'AJANTPHARM': 'NIFTY 500',
+    'BHARATRAS': 'NIFTY 500',
+    'ENDURANCE': 'NIFTY 500',
+    'PRUDENT': 'NIFTY 500',
+    'AIIL': 'NIFTY 500',
+    'GLAXO': 'NIFTY 500',
+    'DATAPATTNS': 'NIFTY 500',
+    'DOMS': 'NIFTY 500',
+    'RATNAMANI': 'NIFTY 500',
+    'SHAILY': 'NIFTY 500',
+    'INTERARCH': 'NIFTY 500',
+    'GRSE': 'NIFTY 500',
+    'HONDAPOWER': 'NIFTY 500',
+    'BALKRISIND': 'NIFTY 500',
+    'MTARTECH': 'NIFTY 500',
+    'HYUNDAI': 'NIFTY 500',
+    'JUBLCPL': 'NIFTY 500',
+    'COROMANDEL': 'NIFTY 500',
+    'RPGLIFE': 'NIFTY 500',
+    'KDDL': 'NIFTY 500',
+    'CENTUM': 'NIFTY 500',
+    'FIEMIND': 'NIFTY 500',
+    'SAFARI': 'NIFTY 500',
+    'NBIFIN': 'NIFTY 500',
+    'POWERMECH': 'NIFTY 500',
+    'INDIAMART': 'NIFTY 500',
+    'V2RETAIL': 'NIFTY 500',
+    'STYLAMIND': 'NIFTY 500',
+    'ANUP': 'NIFTY 500',
+    'TIIL': 'NIFTY 500',
+    'MASTEK': 'NIFTY 500',
+    'E2E': 'NIFTY 500',
+    'STYRENIX': 'NIFTY 500',
+    'MPSLTD': 'NIFTY 500',
+    'GALAXYSURF': 'NIFTY 500',
+    'SUMMITSEC': 'NIFTY 500',
+    'CAPLIPOINT': 'NIFTY 500',
+    'CHOLAHLDNG': 'NIFTY 500',
+    'TEGA': 'NIFTY 500',
+    'METROPOLIS': 'NIFTY 500',
+    'LGBBROSLTD': 'NIFTY 500',
+    'POLYMED': 'NIFTY 500',
+    'AUTOAXLES': 'NIFTY 500',
+    'NH': 'NIFTY 500',
+    'BBTC': 'NIFTY 500',
+    'GRAVITA': 'NIFTY 500',
+    'SKFINDIA': 'NIFTY 500',
+    'CIGNITITEC': 'NIFTY 500',
+    'TATACOMM': 'NIFTY 500',
+    'JBCHEPHARM': 'NIFTY 500',
+    'GRPLTD': 'NIFTY 500',
+    'ACC': 'NIFTY 500',
+    'GKWLIMITED': 'NIFTY 500',
+    'SANSERA': 'NIFTY 500',
+    'BEML': 'NIFTY 500',
+    'AFFLE': 'NIFTY 500',
+    'BHARTIHEXA': 'NIFTY 500',
+    'GLAND': 'NIFTY 500',
+    'ABREL': 'NIFTY 500',
+    'ZOTA': 'NIFTY 500',
+    'SJS': 'NIFTY 500',
+    'ACUTAAS': 'NIFTY 500',
+    'TBOTEK': 'NIFTY 500',
+    'UBL': 'NIFTY 500',
+    'IKS': 'NIFTY 500',
+    'MAPMYINDIA': 'NIFTY 500',
+    'BETA': 'NIFTY 500',
+    'KIRLOSBROS': 'NIFTY 500',
+    'VEEDOL': 'NIFTY 500',
+    'ONESOURCE': 'NIFTY 500',
+    'IFBIND': 'NIFTY 500',
+    'AZAD': 'NIFTY 500',
+    'HESTERBIO': 'NIFTY 500',
+    'TEAMLEASE': 'NIFTY 500',
+    'COCHINSHIP': 'NIFTY 500',
+    'INDOTECH': 'NIFTY 500',
+    'THEJO': 'NIFTY 500',
+    'ALKYLAMINE': 'NIFTY 500',
+    'VINATIORGA': 'NIFTY 500',
+    'PGIL': 'NIFTY 500',
+    'GRINDWELL': 'NIFTY 500',
+    'YASHO': 'NIFTY 500',
+    'ERIS': 'NIFTY 500',
+    'LGEINDIA': 'NIFTY 500',
+    'AAVAS': 'NIFTY 500',
+    'BIRLANU': 'NIFTY 500',
+    'CPPLUS': 'NIFTY 500',
+    'CARERATING': 'NIFTY 500',
+    'EIMCOELECO': 'NIFTY 500',
+    'DEEPAKNTR': 'NIFTY 500',
+    'JINDALPHOT': 'NIFTY 500',
+    'PIRAMALFIN': 'NIFTY 500',
+    'SOLEX': 'NIFTY 500',
+    'HIRECT': 'NIFTY 500',
+    'ARMANFIN': 'NIFTY 500',
+    'LUMAXTECH': 'NIFTY 500',
+    'IPCALAB': 'NIFTY 500',
+    'MIDWESTLTD': 'NIFTY 500',
+    'PIXTRANS': 'NIFTY 500',
+    'NPST': 'NIFTY 500',
+    'SOBHA': 'NIFTY 500',
+    'EMCURE': 'NIFTY 500',
+    'TATVA': 'NIFTY 500',
+    'DPABHUSHAN': 'NIFTY 500',
+    'WELINV': 'NIFTY 500',
+    'JCHAC': 'NIFTY 500',
+    'RRKABEL': 'NIFTY 500',
+    'VENKEYS': 'NIFTY 500',
+    'NILKAMAL': 'NIFTY 500',
+    'JLHL': 'NIFTY 500',
+    'VINDHYATEL': 'NIFTY 500',
+    'EPIGRAL': 'NIFTY 500',
+    'IMFA': 'NIFTY 500',
+    'ZENTEC': 'NIFTY 500',
+    'RAINBOW': 'NIFTY 500',
+    'CONCORDBIO': 'NIFTY 500',
+    'RANEHOLDIN': 'NIFTY 500',
+    'MANORAMA': 'NIFTY 500',
+    'WOCKPHARMA': 'NIFTY 500',
+    'NGLFINE': 'NIFTY 500',
+    'ACCELYA': 'NIFTY 500',
+    'ANURAS': 'NIFTY 500',
+    'POCL': 'NIFTY 500',
+    'CREDITACC': 'NIFTY 500',
+    'LLOYDSME': 'NIFTY 500',
+    'TRAVELFOOD': 'NIFTY 500',
+    'AMBIKCO': 'NIFTY 500',
+    'SUNCLAY': 'NIFTY 500',
+    'PUNJABCHEM': 'NIFTY 500',
+    'IFBAGRO': 'NIFTY 500',
+    'VENUSPIPES': 'NIFTY 500',
+    'WABAG': 'NIFTY 500',
+    'DCMSHRIRAM': 'NIFTY 500',
+    'NESCO': 'NIFTY 500',
+    'DEEPAKFERT': 'NIFTY 500',
+    'INDIGOPNTS': 'NIFTY 500',
+    'SASKEN': 'NIFTY 500',
+    'DODLA': 'NIFTY 500',
+    'SPECTRUM': 'NIFTY 500',
+    'OLECTRA': 'NIFTY 500',
+    'DHANUKA': 'NIFTY 500',
+    'APOLSINHOT': 'NIFTY 500',
+    'HOMEFIRST': 'NIFTY 500',
+    'KPIL': 'NIFTY 500',
+    'METROBRAND': 'NIFTY 500',
+    'DHUNINV': 'NIFTY 500',
+    'GULFOILLUB': 'NIFTY 500',
+    'MALLCOM': 'NIFTY 500',
+    'MEDANTA': 'NIFTY 500',
+    'AURIONPRO': 'NIFTY 500',
+    'UTIAMC': 'NIFTY 500',
+    'KIRLOSENG': 'NIFTY 500',
+    'INOXINDIA': 'NIFTY 500',
+    'RAYMONDLSL': 'NIFTY 500',
+    'MGL': 'NIFTY 500',
+    'SIGNATURE': 'NIFTY 500',
+    'BALAMINES': 'NIFTY 500',
+    'LUXIND': 'NIFTY 500',
+    'GESHIP': 'NIFTY 500',
+    'TECHNOE': 'NIFTY 500',
+    'NIBE': 'NIFTY 500',
+    'GOODLUCK': 'NIFTY 500',
+    'JPOLYINVST': 'NIFTY 500',
+    'NEOGEN': 'NIFTY 500',
+    'DIAMONDYD': 'NIFTY 500',
+    'JUBLPHARMA': 'NIFTY 500',
+    'ADOR': 'NIFTY 500',
+    'GMMPFAUDLR': 'NIFTY 500',
+    'HAPPYFORGE': 'NIFTY 500',
+    'BIRLACORPN': 'NIFTY 500',
+    'INDIAGLYCO': 'NIFTY 500',
+    'SANDESH': 'NIFTY 500',
+    'TTKHLTCARE': 'NIFTY 500',
+    'CHEVIOT': 'NIFTY 500',
+    'RAMCOCEM': 'NIFTY 500',
+    'KAJARIACER': 'NIFTY 500',
+    'PVRINOX': 'NIFTY 500',
+    'TCI': 'NIFTY 500',
+    'RACLGEAR': 'NIFTY 500',
+    'KIRLPNU': 'NIFTY 500',
+    'IMPAL': 'NIFTY 500',
+    'EIDPARRY': 'NIFTY 500',
+    'DREDGECORP': 'NIFTY 500',
+    'INTELLECT': 'NIFTY 500',
+    'SEAMECLTD': 'NIFTY 500',
+    'KERNEX': 'NIFTY 500',
+    'GRINFRA': 'NIFTY 500',
+    'CCL': 'NIFTY 500',
+    'EXPLEOSOL': 'NIFTY 500',
+    'HATSUN': 'NIFTY 500',
+    'GODREJIND': 'NIFTY 500',
+    'MACPOWER': 'NIFTY 500',
+    'WEALTH': 'NIFTY 500',
+    'GROBTEA': 'NIFTY 500',
+    'GMBREW': 'NIFTY 500',
+    'SUDARSCHEM': 'NIFTY 500',
+    'ENTERO': 'NIFTY 500',
+    'ASAHIINDIA': 'NIFTY 500',
+    'RPEL': 'NIFTY 500',
+    'AJMERA': 'NIFTY 500',
+    'VIJAYA': 'NIFTY 500',
+    'DSSL': 'NIFTY 500',
+    'KPRMILL': 'NIFTY 500',
+    'KSCL': 'NIFTY 500',
+    'GABRIEL': 'NIFTY 500',
+    'XPROINDIA': 'NIFTY 500',
+    'GLOBUSSPR': 'NIFTY 500',
+    'BATAINDIA': 'NIFTY 500',
+    'ASALCBR': 'NIFTY 500',
+    'AHLUCONT': 'NIFTY 500',
+    'JYOTICNC': 'NIFTY 500',
+    'SHARDAMOTR': 'NIFTY 500',
+    'WAAREERTL': 'NIFTY 500',
+    'MAITHANALL': 'NIFTY 500',
+    'UNIMECH': 'NIFTY 500',
+    'SUNDRMFAST': 'NIFTY 500',
+    'ELDEHSG': 'NIFTY 500',
+    'ACE': 'NIFTY 500',
+    'ARE&M': 'NIFTY 500',
+    'EXCELINDUS': 'NIFTY 500',
+    'CARYSIL': 'NIFTY 500',
+    'CHENNPETRO': 'NIFTY 500',
+    'WHIRLPOOL': 'NIFTY 500',
+    'ATLANTAELE': 'NIFTY 500',
+    'NUCLEUS': 'NIFTY 500',
+    'PREMIERENE': 'NIFTY 500',
+    'SHARDACROP': 'NIFTY 500',
+    'CANFINHOME': 'NIFTY 500',
+    'CLEAN': 'NIFTY 500',
+    'ASTRAMICRO': 'NIFTY 500',
+    'NATCOPHARM': 'NIFTY 500',
+    'KAUSHALYA': 'NIFTY 500',
+    'CHALET': 'NIFTY 500',
+    'SAILIFE': 'NIFTY 500',
+    'PSPPROJECT': 'NIFTY 500',
+    'UNIVCABLES': 'NIFTY 500',
+    'ALIVUS': 'NIFTY 500',
+    'BRIGADE': 'NIFTY 500',
+    'STAR': 'NIFTY 500',
+    'APLLTD': 'NIFTY 500',
+    'CARBORUNIV': 'NIFTY 500',
+    'GANECOS': 'NIFTY 500',
+    'AVALON': 'NIFTY 500',
+    'NAM-INDIA': 'NIFTY 500',
+    'SYMPHONY': 'NIFTY 500',
+    'ALLDIGI': 'NIFTY 500',
+    'SUBROS': 'NIFTY 500',
+    'POKARNA': 'NIFTY 500',
+    'AETHER': 'NIFTY 500',
+    'MOTILALOFS': 'NIFTY 500',
+    'INDIASHLTR': 'NIFTY 500',
+    'ALICON': 'NIFTY 500',
+    'NEWGEN': 'NIFTY 500',
+    'IZMO': 'NIFTY 500',
+    'ORCHPHARMA': 'NIFTY 500',
+    'YUKEN': 'NIFTY 500',
+    'GOKEX': 'NIFTY 500',
+    'ELECTHERM': 'NIFTY 500',
+    'CENTURYPLY': 'NIFTY 500',
+    'WHEELS': 'NIFTY 500',
+    'PASHUPATI': 'NIFTY 500',
+    'CEMPRO': 'NIFTY 500',
+    'POLYPLEX': 'NIFTY 500',
+    'FACT': 'NIFTY 500',
+    'DATAMATICS': 'NIFTY 500',
+    'PITTIENG': 'NIFTY 500',
+    'RIIL': 'NIFTY 500',
+    'NDRAUTO': 'NIFTY 500',
+    'GANESHHOU': 'NIFTY 500',
+    'HBLENGINE': 'NIFTY 500',
+    'ISGEC': 'NIFTY 500',
+    'AVANTIFEED': 'NIFTY 500',
+    'MEDPLUS': 'NIFTY 500',
+    'SHYAMMETL': 'NIFTY 500',
+    'SILVERTUC': 'NIFTY 500',
+    'INDNIPPON': 'NIFTY 500',
+    'TINNARUBR': 'NIFTY 500',
+    'WELCORP': 'NIFTY 500',
+    'SENORES': 'NIFTY 500',
+    'WINDLAS': 'NIFTY 500',
+    'CNL': 'NIFTY 500',
+    'JKLAKSHMI': 'NIFTY 500',
+    'KRN': 'NIFTY 500',
+    'PROTEAN': 'NIFTY 500',
+    'ALBERTDAVD': 'NIFTY 500',
+    'HDBFS': 'NIFTY 500',
+    'PKTEA': 'NIFTY 500',
+    'ICEMAKE': 'NIFTY 500',
+    'HEXT': 'NIFTY 500',
+    '63MOONS': 'NIFTY 500',
+    'VMART': 'NIFTY 500',
+    'BIL': 'NIFTY 500',
+    'NELCO': 'NIFTY 500',
+    'HGINFRA': 'NIFTY 500',
+    'DECCANCE': 'NIFTY 500',
+    'MANGLMCEM': 'NIFTY 500',
+    'GALAPREC': 'NIFTY 500',
+    'ABSLAMC': 'NIFTY 500',
+    'AEGISLOG': 'NIFTY 500',
+    'GANDHITUBE': 'NIFTY 500',
+    'RPSGVENT': 'NIFTY 500',
+    'CHOICEIN': 'NIFTY 500',
+    'TEMBO': 'NIFTY 500',
+    'ASHAPURMIN': 'NIFTY 500',
+    'SUPRIYA': 'NIFTY 500',
+    'RML': 'NIFTY 500',
+    'AARTIPHARM': 'NIFTY 500',
+    'FINCABLES': 'NIFTY 500',
+    'SYRMA': 'NIFTY 500',
+    'KSB': 'NIFTY 500',
+    'ZENSARTECH': 'NIFTY 500',
+    'KRSNAA': 'NIFTY 500',
+    'BIKAJI': 'NIFTY 500',
+    'SPAL': 'NIFTY 500',
+    'CONTROLPR': 'NIFTY 500',
+    'AGI': 'NIFTY 500',
+    'KSL': 'NIFTY 500',
+    'TATAINVEST': 'NIFTY 500',
+    'INNOVACAP': 'NIFTY 500',
+    'SVLL': 'NIFTY 500',
+    'CAPILLARY': 'NIFTY 500',
+    'COSMOFIRST': 'NIFTY 500',
+    'SCHNEIDER': 'NIFTY 500',
+    'SUNDROP': 'NIFTY 500',
+    'HCG': 'NIFTY 500',
+    'RVTH': 'NIFTY 500',
+    'JUSTDIAL': 'NIFTY 500',
+    'BANCOINDIA': 'NIFTY 500',
+    'DENORA': 'NIFTY 500',
+    'VENTIVE': 'NIFTY 500',
+    'JSLL': 'NIFTY 500',
+    'MONTECARLO': 'NIFTY 500',
+    'ASTEC': 'NIFTY 500',
+    'QPOWER': 'NIFTY 500',
+    'INSECTICID': 'NIFTY 500',
+    'YATHARTH': 'NIFTY 500',
+    'ANTHEM': 'NIFTY 500',
+    'SUDEEPPHRM': 'NIFTY 500',
+    'SALZERELEC': 'NIFTY 500',
+    'JUBLINGREA': 'NIFTY 500',
+    'INFOBEAN': 'NIFTY 500',
+    'KEC': 'NIFTY 500',
+    'BUTTERFLY': 'NIFTY 500',
+    'AMRUTANJAN': 'NIFTY 500',
+    'TDPOWERSYS': 'NIFTY 500',
+    'AGARIND': 'NIFTY 500',
+    'FAIRCHEMOR': 'NIFTY 500',
+    'ROUTE': 'NIFTY 500',
+    'SUNDRMBRAK': 'NIFTY 500',
+    'ROSSTECH': 'NIFTY 500',
+    'GARFIBRES': 'NIFTY 500',
+    'PARAS': 'NIFTY 500',
+    'KIMS': 'NIFTY 500',
+    'RATEGAIN': 'NIFTY 500',
+    'KALYANIFRG': 'NIFTY 500',
+    'RAMCOSYS': 'NIFTY 500',
+    'SPLPETRO': 'NIFTY 500',
+    'BLACKBUCK': 'NIFTY 500',
+    'SHAKTIPUMP': 'NIFTY 500',
+    'VARROC': 'NIFTY 500',
+    'SIYSIL': 'NIFTY 500',
+    'EUREKAFORB': 'NIFTY 500',
+    'ATHERENERG': 'NIFTY 500',
+    'TTKPRESTIG': 'NIFTY 500',
+    'SWELECTES': 'NIFTY 500',
+    'GLOSTERLTD': 'NIFTY 500',
+    'BALUFORGE': 'NIFTY 500',
+    'RUBICON': 'NIFTY 500',
+    'SUYOG': 'NIFTY 500',
+    'ABDL': 'NIFTY 500',
+    'ORKLAINDIA': 'NIFTY 500',
+    'STOVEKRAFT': 'NIFTY 500',
+    'EMUDHRA': 'NIFTY 500',
+    'ASTERDM': 'NIFTY 500',
+    'RAMRAT': 'NIFTY 500',
+    'PNGJL': 'NIFTY 500',
+    'PRICOLLTD': 'NIFTY 500',
+    'AJAXENGG': 'NIFTY 500',
+    'VIMTALABS': 'NIFTY 500',
+    'ARSSBL': 'NIFTY 500',
+    'MANYAVAR': 'NIFTY 500',
+    'ARVSMART': 'NIFTY 500',
+    'WEWORK': 'NIFTY 500',
+    'DIVGIITTS': 'NIFTY 500',
+    'GALLANTT': 'NIFTY 500',
+    'GODREJAGRO': 'NIFTY 500',
+    'SOLARA': 'NIFTY 500',
+    'ROSSARI': 'NIFTY 500',
+    'MINDACORP': 'NIFTY 500',
+    'TRANSRAILL': 'NIFTY 500',
+    'PAUSHAKLTD': 'NIFTY 500',
+    'SFL': 'NIFTY 500',
+    'GHCL': 'NIFTY 500',
+    'MOLDTKPAC': 'NIFTY 500',
+    'CELLO': 'NIFTY 500',
+    'JBMA': 'NIFTY 500',
+    'FIVESTAR': 'NIFTY 500',
+    'TCIEXP': 'NIFTY 500',
+    'NAVA': 'NIFTY 500',
+    'JKIL': 'NIFTY 500',
+    'SRM': 'NIFTY 500',
+    'SUNTV': 'NIFTY 500',
+    'KIRIINDUS': 'NIFTY 500',
+    'SANDHAR': 'NIFTY 500',
+    'MAHSEAMLES': 'NIFTY 500',
+    'BLUEJET': 'NIFTY 500',
+    'JARO': 'NIFTY 500',
+    'PICCADIL': 'NIFTY 500',
+    'TANLA': 'NIFTY 500',
+    'ITDC': 'NIFTY 500',
+    'RAMKY': 'NIFTY 500',
+    'WESTLIFE': 'NIFTY 500',
+    'ANANTRAJ': 'NIFTY 500',
+    'MARATHON': 'NIFTY 500',
+    'MATRIMONY': 'NIFTY 500',
+    'TIPSMUSIC': 'NIFTY 500',
+    'BORORENEW': 'NIFTY 500',
+    'STUDDS': 'NIFTY 500',
+    'WONDERLA': 'NIFTY 500',
+    'CARRARO': 'NIFTY 500',
+    'GRAPHITE': 'NIFTY 500',
+    'BERGEPAINT': 'NIFTY 500',
+    'EMAMILTD': 'NIFTY 500',
+    'RUSTOMJEE': 'NIFTY 500',
+    'OPTIEMUS': 'NIFTY 500',
+    'COHANCE': 'NIFTY 500',
+    'HEG': 'NIFTY 500',
+    'HNDFDS': 'NIFTY 500',
+    'TRITURBINE': 'NIFTY 500',
+    'SGIL': 'NIFTY 500',
+    'OSWALPUMPS': 'NIFTY 500',
+    'STEL': 'NIFTY 500',
+    'BLUESTONE': 'NIFTY 500',
+    'INDGN': 'NIFTY 500',
+    'KRISHANA': 'NIFTY 500',
+    'ARROWGREEN': 'NIFTY 500',
+    'GMDCLTD': 'NIFTY 500',
+    'KRYSTAL': 'NIFTY 500',
+    'LANDMARK': 'NIFTY 500',
+    'BBOX': 'NIFTY 500',
+    'RKFORGE': 'NIFTY 500',
+    'SILINV': 'NIFTY 500',
+    'EVERESTIND': 'NIFTY 500',
+    'WELENT': 'NIFTY 500',
+    'LEMERITE': 'NIFTY 500',
+    'SARDAEN': 'NIFTY 500',
+    'APOLLOTYRE': 'NIFTY 500',
+    'AVL': 'NIFTY 500',
+    'GUJALKALI': 'NIFTY 500',
+    'TMB': 'NIFTY 500',
+    'MAGADSUGAR': 'NIFTY 500',
+    'AGARWALEYE': 'NIFTY 500',
+    'JINDRILL': 'NIFTY 500',
+    'PREMEXPLN': 'NIFTY 500',
+    'ASAL': 'NIFTY 500',
+    'VISHNU': 'NIFTY 500',
+    'LATENTVIEW': 'NIFTY 500',
+    'JINDALPOLY': 'NIFTY 500',
+    'AWFIS': 'NIFTY 500',
+    'ARVINDFASN': 'NIFTY 500',
+    'SRHHYPOLTD': 'NIFTY 500',
+    'GNFC': 'NIFTY 500',
+    'HAPPSTMNDS': 'NIFTY 500',
+    'KKCL': 'NIFTY 500',
+    'ACI': 'NIFTY 500',
+    'UNIPARTS': 'NIFTY 500',
+    'AADHARHFC': 'NIFTY 500',
+    'DICIND': 'NIFTY 500',
+    'ELGIEQUIP': 'NIFTY 500',
+    'MAYURUNIQ': 'NIFTY 500',
+    'RAYMONDREL': 'NIFTY 500',
+    'ELECON': 'NIFTY 500',
+    'MANORG': 'NIFTY 500',
+    'TEJASNET': 'NIFTY 500',
+    'VESUVIUS': 'NIFTY 500',
+    'BAJAJELEC': 'NIFTY 500',
+    'NRAIL': 'NIFTY 500',
+    'SIRCA': 'NIFTY 500',
+    'TENNIND': 'NIFTY 500',
+    'LINCOLN': 'NIFTY 500',
+    'HERITGFOOD': 'NIFTY 500',
+    'SMARTWORKS': 'NIFTY 500',
+    'GOCOLORS': 'NIFTY 500',
+    'UFLEX': 'NIFTY 500',
+    'MSTCLTD': 'NIFTY 500',
+    'INDRAMEDCO': 'NIFTY 500',
+    'SHANTIGEAR': 'NIFTY 500',
+    'KRISHIVAL': 'NIFTY 500',
+    'MEDIASSIST': 'NIFTY 500',
+    'REPRO': 'NIFTY 500',
+    'ASKAUTOLTD': 'NIFTY 500',
+    'HSCL': 'NIFTY 500',
+    'STARHEALTH': 'NIFTY 500',
+    'FMGOETZE': 'NIFTY 500',
+    'CHEMFAB': 'NIFTY 500',
+    'HLEGLAS': 'NIFTY 500',
+    'TSFINV': 'NIFTY 500',
+    'FAZE3Q': 'NIFTY 500',
+    'SUMICHEM': 'NIFTY 500',
+    'SWANCORP': 'NIFTY 500',
+    'UNICHEMLAB': 'NIFTY 500',
+    'JKTYRE': 'NIFTY 500',
+    'TI': 'NIFTY 500',
+    'RAYMOND': 'NIFTY 500',
+    'SBCL': 'NIFTY 500',
+    'GRMOVER': 'NIFTY 500',
+    'SANATHAN': 'NIFTY 500',
+    'CENTENKA': 'NIFTY 500',
+    'HGS': 'NIFTY 500',
+    'VTL': 'NIFTY 500',
+    'DBL': 'NIFTY 500',
+    'RAJRATAN': 'NIFTY 500',
+    'JASH': 'NIFTY 500',
+    'AWHCL': 'NIFTY 500',
+    'SUPRAJIT': 'NIFTY 500',
+    'MAXESTATES': 'NIFTY 500',
+    'INNOVANA': 'NIFTY 500',
+    'UNITEDTEA': 'NIFTY 500',
+    'MANINDS': 'NIFTY 500',
+    'SANGAMIND': 'NIFTY 500',
+    'HEUBACHIND': 'NIFTY 500',
+    'RHIM': 'NIFTY 500',
+    'ATULAUTO': 'NIFTY 500',
+    'DEEPINDS': 'NIFTY 500',
+    'USHAMART': 'NIFTY 500',
+    'PRECOT': 'NIFTY 500',
+    'GUJAPOLLO': 'NIFTY 500',
+    'SHOPERSTOP': 'NIFTY 500',
+    'BALRAMCHIN': 'NIFTY 500',
+    'SKIPPER': 'NIFTY 500',
+    'SKMEGGPROD': 'NIFTY 500',
+    'THYROCARE': 'NIFTY 500',
+    'JSFB': 'NIFTY 500',
+    'CHAMBLFERT': 'NIFTY 500',
+    'IGARASHI': 'NIFTY 500',
+    'BSOFT': 'NIFTY 500',
+    'CYIENTDLM': 'NIFTY 500',
+    'DLINKINDIA': 'NIFTY 500',
+    'ZYDUSWELL': 'NIFTY 500',
+    'IDEAFORGE': 'NIFTY 500',
+    'NIPPOBATRY': 'NIFTY 500',
+    'KPIGREEN': 'NIFTY 500',
+    'AKUMS': 'NIFTY 500',
+    'SAKAR': 'NIFTY 500',
+    'MAMATA': 'NIFTY 500',
+    'HINDCOMPOS': 'NIFTY 500',
+    'SOMANYCERA': 'NIFTY 500',
+    'CEWATER': 'NIFTY 500',
+    'FDC': 'NIFTY 500',
+    'SWIGGY': 'NIFTY 500',
+    'ABCOTS': 'NIFTY 500',
+    'INDIACEM': 'NIFTY 500',
+    'GENESYS': 'NIFTY 500',
+    'EMSLIMITED': 'NIFTY 500',
+    'BAJAJHCARE': 'NIFTY 500',
+    'INDIANHUME': 'NIFTY 500',
+    'BFINVEST': 'NIFTY 500',
+    'NINSYS': 'NIFTY 500',
+    'MBAPL': 'NIFTY 500',
+    'WSTCSTPAPR': 'NIFTY 500',
+    'TIPSFILMS': 'NIFTY 500',
+    'TRUALT': 'NIFTY 500',
+    'IGPL': 'NIFTY 500',
+    'LENSKART': 'NIFTY 500',
+    'MEDICAMEQ': 'NIFTY 500',
+    'RELAXO': 'NIFTY 500',
+    'NIITMTS': 'NIFTY 500',
+    'RSYSTEMS': 'NIFTY 500',
+    'REPCOHOME': 'NIFTY 500',
+    'MAHLIFE': 'NIFTY 500',
+    'SUNTECK': 'NIFTY 500',
+    'RISHABH': 'NIFTY 500',
+    'AARTISURF': 'NIFTY 500',
+    'CIEINDIA': 'NIFTY 500',
+    'AFCONS': 'NIFTY 500',
+    'THELEELA': 'NIFTY 500',
+    'ANTELOPUS': 'NIFTY 500',
+    'GUJGASLTD': 'NIFTY 500',
+    'AARTIDRUGS': 'NIFTY 500',
+    'CUPID': 'NIFTY 500',
+    'MODINATUR': 'NIFTY 500',
+    'HPL': 'NIFTY 500',
+    'GOACARBON': 'NIFTY 500',
+    'CSBBANK': 'NIFTY 500',
+    'KRBL': 'NIFTY 500',
+    'GUJTHEM': 'NIFTY 500',
+    'BELLACASA': 'NIFTY 500',
+    'TAJGVK': 'NIFTY 500',
+    'SGFIN': 'NIFTY 500',
+    'KOLTEPATIL': 'NIFTY 500',
+    'SHREEPUSHK': 'NIFTY 500',
+    'ROHLTD': 'NIFTY 500',
+    'JAINREC': 'NIFTY 500',
+    'AVADHSUGAR': 'NIFTY 500',
+    'GICRE': 'NIFTY 500',
+    'HINDCOPPER': 'NIFTY 500',
+    'LTFOODS': 'NIFTY 500',
+    'DOLPHIN': 'NIFTY 500',
+    'EIHOTEL': 'NIFTY 500',
+    'MBEL': 'NIFTY 500',
+    'SAATVIKGL': 'NIFTY 500',
+    'SHIVALIK': 'NIFTY 500',
+    'TMCV': 'NIFTY 500',
+    'HARSHA': 'NIFTY 500',
+    'SOTL': 'NIFTY 500',
+    'APCOTEXIND': 'NIFTY 500',
+    'GOLDIAM': 'NIFTY 500',
+    'MEIL': 'NIFTY 500',
+    'JGCHEM': 'NIFTY 500',
+    'SAREGAMA': 'NIFTY 500',
+    'JKPAPER': 'NIFTY 500',
+    'BESTAGRO': 'NIFTY 500',
+    'PANACEABIO': 'NIFTY 500',
+    'PDSL': 'NIFTY 500',
+    'CREST': 'NIFTY 500',
+    'MMFL': 'NIFTY 500',
+    'EIHAHOTELS': 'NIFTY 500',
+    'TRIVENI': 'NIFTY 500',
+    'AARTIIND': 'NIFTY 500',
+    'HARIOMPIPE': 'NIFTY 500',
+    'KAYA': 'NIFTY 500',
+    'ELLEN': 'NIFTY 500',
+    'DOLLAR': 'NIFTY 500',
+    'VIPIND': 'NIFTY 500',
+    'IONEXCHANG': 'NIFTY 500',
+    'CMSINFO': 'NIFTY 500',
+    'SONATSOFTW': 'NIFTY 500',
+    'KALPATARU': 'NIFTY 500',
+    'THOMASCOTT': 'NIFTY 500',
+    'GUFICBIO': 'NIFTY 500',
+    'ZAGGLE': 'NIFTY 500',
+    'KPEL': 'NIFTY 500',
+    'TMPV': 'NIFTY 500',
+    'M&MFIN': 'NIFTY 500',
+    'MODIS': 'NIFTY 500',
+    'NUVOCO': 'NIFTY 500',
+    'KIOCL': 'NIFTY 500',
+    'RPTECH': 'NIFTY 500',
+    'ORIENTTECH': 'NIFTY 500',
+    'GODIGIT': 'NIFTY 500',
+    'KILITCH': 'NIFTY 500',
+    'FSL': 'NIFTY 500',
+    'GEECEE': 'NIFTY 500',
+    'SGMART': 'NIFTY 500',
+    'DYCL': 'NIFTY 500',
+    'SHREEJISPG': 'NIFTY 500',
+    'SHILPAMED': 'NIFTY 500',
+    'VGUARD': 'NIFTY 500',
+    'VIDHIING': 'NIFTY 500',
+    'RAILTEL': 'NIFTY 500',
+    'ASIANHOTNR': 'NIFTY 500',
+    'MOIL': 'NIFTY 500',
+    'SIS': 'NIFTY 500',
+    'EVEREADY': 'NIFTY 500',
+    'TATACAP': 'NIFTY 500',
+    'SOFTTECH': 'NIFTY 500',
+    'MAHLOG': 'NIFTY 500',
+    'MASFIN': 'NIFTY 500',
+    'SKYGOLD': 'NIFTY 500',
+    'ARIES': 'NIFTY 500',
+    'BAJAJINDEF': 'NIFTY 500',
+    'SMSPHARMA': 'NIFTY 500',
+    'BLS': 'NIFTY 500',
+    'IGIL': 'NIFTY 500',
+    'PARAGMILK': 'NIFTY 500',
+    'IIFLCAPS': 'NIFTY 500',
+    'BANSALWIRE': 'NIFTY 500',
+    'DENTA': 'NIFTY 500',
+    'ARVIND': 'NIFTY 500',
+    'NITINSPIN': 'NIFTY 500',
+    'RAMCOIND': 'NIFTY 500',
+    'ZUARIIND': 'NIFTY 500',
+    'ARIHANTSUP': 'NIFTY 500',
+    'KEYFINSERV': 'NIFTY 500',
+    'MHRIL': 'NIFTY 500',
+    'DIFFNKG': 'NIFTY 500',
+    'GOPAL': 'NIFTY 500',
+    'PCBL': 'NIFTY 500',
+    'GVPIL': 'NIFTY 500',
+    'SENCO': 'NIFTY 500',
+    'ADVENZYMES': 'NIFTY 500',
+    'SEMAC': 'NIFTY 500',
+    '5PAISA': 'NIFTY 500',
+    'ZODIAC': 'NIFTY 500',
+    'SANGHVIMOV': 'NIFTY 500',
+    'ITI': 'NIFTY 500',
+    'IRIS': 'NIFTY 500',
+    'MONARCH': 'NIFTY 500',
+    'GNA': 'NIFTY 500',
+    'PRAJIND': 'NIFTY 500',
+    'GENUSPOWER': 'NIFTY 500',
+    'GOCLCORP': 'NIFTY 500',
+    'TRF': 'NIFTY 500',
+    'EUROPRATIK': 'NIFTY 500',
+    'SASTASUNDR': 'NIFTY 500',
+    'MIDHANI': 'NIFTY 500',
+    'APOLLOPIPE': 'NIFTY 500',
+    'SHIVAUM': 'NIFTY 500',
+    'VLSFINANCE': 'NIFTY 500',
+    'BOROLTD': 'NIFTY 500',
+    'FLAIR': 'NIFTY 500',
+    'CRAMC': 'NIFTY 500',
+    'KAPSTON': 'NIFTY 500',
+    'DALMIASUG': 'NIFTY 500',
+    'NURECA': 'NIFTY 500',
+    'ASIANENE': 'NIFTY 500',
+    'EPACKPEB': 'NIFTY 500',
+    'STYL': 'NIFTY 500',
+    'EFCIL': 'NIFTY 500',
+    'ZUARI': 'NIFTY 500',
+    'APTUS': 'NIFTY 500',
+    'ASHIANA': 'NIFTY 500',
+    'CSLFINANCE': 'NIFTY 500',
+    'DVL': 'NIFTY 500',
+    'FIRSTCRY': 'NIFTY 500',
+    'GSPL': 'NIFTY 500',
+    'VSSL': 'NIFTY 500',
+    'KSOLVES': 'NIFTY 500',
+    'SOLARWORLD': 'NIFTY 500',
+    'ICIL': 'NIFTY 500',
+    'IVALUE': 'NIFTY 500',
+    'SALONA': 'NIFTY 500',
+    'NRBBEARING': 'NIFTY 500',
+    'S&SPOWER': 'NIFTY 500',
+    'OAL': 'NIFTY 500',
+    'SCPL': 'NIFTY 500',
+    'DDEVPLSTIK': 'NIFTY 500',
+    'IRMENERGY': 'NIFTY 500',
+    'JYOTHYLAB': 'NIFTY 500',
+    'PONNIERODE': 'NIFTY 500',
+    'SURAKSHA': 'NIFTY 500',
+    'CRIZAC': 'NIFTY 500',
+    'QUICKHEAL': 'NIFTY 500',
+    'TALBROAUTO': 'NIFTY 500',
+    'PRIMESECU': 'NIFTY 500',
+    'REDINGTON': 'NIFTY 500',
+    'TARIL': 'NIFTY 500',
+    'ARTEMISMED': 'NIFTY 500',
+    'TEAMGTY': 'NIFTY 500',
+    'LIBERTSHOE': 'NIFTY 500',
+    'EBGNG': 'NIFTY 500',
+    'MUTHOOTCAP': 'NIFTY 500',
+    'ONWARDTEC': 'NIFTY 500',
+    'WINDMACHIN': 'NIFTY 500',
+    'PANAMAPET': 'NIFTY 500',
+    'RITCO': 'NIFTY 500',
+    'GREENPLY': 'NIFTY 500',
+    'STYLEBAAZA': 'NIFTY 500',
+    'HINDWAREAP': 'NIFTY 500',
+    'INDOBORAX': 'NIFTY 500',
+    'VALIANTORG': 'NIFTY 500',
+    'JSWINFRA': 'NIFTY 500',
+    'CUB': 'NIFTY 500',
+    'SIMPLEXINF': 'NIFTY 500',
+    'DYNPRO': 'NIFTY 500',
+    'BECTORFOOD': 'NIFTY 500',
+    'SPANDANA': 'NIFTY 500',
+    'CPEDU': 'NIFTY 500',
+    'STERTOOLS': 'NIFTY 500',
+    'STARTECK': 'NIFTY 500',
+    'MWL': 'NIFTY 500',
+    'VRLLOG': 'NIFTY 500',
+    'ORIENTBELL': 'NIFTY 500',
+    'FINOPB': 'NIFTY 500',
+    'SRGHFL': 'NIFTY 500',
+    'QUADFUTURE': 'NIFTY 500',
+    'ALLTIME': 'NIFTY 500',
+    'LAXMIDENTL': 'NIFTY 500',
+    'TIL': 'NIFTY 500',
+    'LGHL': 'NIFTY 500',
+    'APEX': 'NIFTY 500',
+    'AGIIL': 'NIFTY 500',
+    'SURAJEST': 'NIFTY 500',
+    'RALLIS': 'NIFTY 500',
+    'CAMPUS': 'NIFTY 500',
+    'CAPITALSFB': 'NIFTY 500',
+    'NAHARCAP': 'NIFTY 500',
+    'DIAMINESQ': 'NIFTY 500',
+    'HONASA': 'NIFTY 500',
+    'CHEMPLASTS': 'NIFTY 500',
+    'JUNIPER': 'NIFTY 500',
+    'SURYAROSNI': 'NIFTY 500',
+    'DMCC': 'NIFTY 500',
+    'JWL': 'NIFTY 500',
+    'SURAJLTD': 'NIFTY 500',
+    'NORTHARC': 'NIFTY 500',
+    'NAHARPOLY': 'NIFTY 500',
+    'CANTABIL': 'NIFTY 500',
+    'CAPACITE': 'NIFTY 500',
+    'CLSEL': 'NIFTY 500',
+    'IXIGO': 'NIFTY 500',
+    'EPACK': 'NIFTY 500',
+    'VSTIND': 'NIFTY 500',
+    'PODDARMENT': 'NIFTY 500',
+    'REFEX': 'NIFTY 500',
+    'PNCINFRA': 'NIFTY 500',
+    'BAJAJCON': 'NIFTY 500',
+    'UTTAMSUGAR': 'NIFTY 500',
+    'GODAVARIB': 'NIFTY 500',
+    'HIKAL': 'NIFTY 500',
+    'PRINCEPIPE': 'NIFTY 500',
+    'GREENLAM': 'NIFTY 500',
+    'SUNFLAG': 'NIFTY 500',
+    'MMP': 'NIFTY 500',
+    'PPL': 'NIFTY 500',
+    'DELPHIFX': 'NIFTY 500',
+    'ASAHISONG': 'NIFTY 500',
+    'SAHYADRI': 'NIFTY 500',
+    'AEGISVOPAK': 'NIFTY 500',
+    'AKSHARCHEM': 'NIFTY 500',
+    'AWL': 'NIFTY 500',
+    'PLATIND': 'NIFTY 500',
+    'KARURVYSYA': 'NIFTY 500',
+    'HUBTOWN': 'NIFTY 500',
+    'ZENITHEXPO': 'NIFTY 500',
+    'NLCINDIA': 'NIFTY 500',
+    'PURVA': 'NIFTY 500',
+    'VIKRAMSOLR': 'NIFTY 500',
+    'INDIANCARD': 'NIFTY 500',
+    'INDOCO': 'NIFTY 500',
+    'INDOSTAR': 'NIFTY 500',
+    'DCI': 'NIFTY 500',
+    'DBCORP': 'NIFTY 500',
+    'SESHAPAPER': 'NIFTY 500',
+    'HERANBA': 'NIFTY 500',
+    'UNIVPHOTO': 'NIFTY 500',
+    'VINYLINDIA': 'NIFTY 500',
+    'GANESHCP': 'NIFTY 500',
+    'FABTECH': 'NIFTY 500',
+    'GPIL': 'NIFTY 500',
+    'SAPPHIRE': 'NIFTY 500',
+    'GREENPANEL': 'NIFTY 500',
+    'DHARMAJ': 'NIFTY 500',
+    'MOBIKWIK': 'NIFTY 500',
+    'WANBURY': 'NIFTY 500',
+    'PINELABS': 'NIFTY 500',
+    'ASPINWALL': 'NIFTY 500',
+    'VAIBHAVGBL': 'NIFTY 500',
+    'APOLLO': 'NIFTY 500',
+    'PRECWIRE': 'NIFTY 500',
+    'CEIGALL': 'NIFTY 500',
+    'JNKINDIA': 'NIFTY 500',
+    'RELIGARE': 'NIFTY 500',
+    'TIRUMALCHM': 'NIFTY 500',
+    'KAMATHOTEL': 'NIFTY 500',
+    'ECOSMOBLTY': 'NIFTY 500',
+    'EIFFL': 'NIFTY 500',
+    'BHAGCHEM': 'NIFTY 500',
+    'TARSONS': 'NIFTY 500',
+    'ACMESOLAR': 'NIFTY 500',
+    'RITES': 'NIFTY 500',
+    'NAZARA': 'NIFTY 500',
+    'SCI': 'NIFTY 500',
+    'MHLXMIRU': 'NIFTY 500',
+    'STANLEY': 'NIFTY 500',
+    'KANSAINER': 'NIFTY 500',
+    'ADVENTHTL': 'NIFTY 500',
+    'SIGNPOST': 'NIFTY 500',
+    'STARCEMENT': 'NIFTY 500',
+    'MAZDA': 'NIFTY 500',
+    'ALPHAGEO': 'NIFTY 500',
+    'KABRAEXTRU': 'NIFTY 500',
+    'DCAL': 'NIFTY 500',
+    'SREEL': 'NIFTY 500',
+    'PPAP': 'NIFTY 500',
+    'SWSOLAR': 'NIFTY 500',
+    'NIRAJISPAT': 'NIFTY 500',
+    'RUBYMILLS': 'NIFTY 500',
+    'DEEDEV': 'NIFTY 500',
+    'BLSE': 'NIFTY 500',
+    'EPL': 'NIFTY 500',
+    'SANDUMA': 'NIFTY 500',
+    'SULA': 'NIFTY 500',
+    'LOYALTEX': 'NIFTY 500',
+    'SAGCEM': 'NIFTY 500',
+    'HUHTAMAKI': 'NIFTY 500',
+    'DAMCAPITAL': 'NIFTY 500',
+    'STEELCAS': 'NIFTY 500',
+    'ADFFOODS': 'NIFTY 500',
+    'UNIDT': 'NIFTY 500',
+    'AFFORDABLE': 'NIFTY 500',
+    'SEQUENT': 'NIFTY 500',
+    'QUESS': 'NIFTY 500',
+    'IFGLEXPOR': 'NIFTY 500',
+    'PATELRMART': 'NIFTY 500',
+    'JAYKAY': 'NIFTY 500',
+    'MOSCHIP': 'NIFTY 500',
+    'KNAGRI': 'NIFTY 500',
+    'LAOPALA': 'NIFTY 500',
+    'BLAL': 'NIFTY 500',
+    'UTLSOLAR': 'NIFTY 500',
+    'JAYAGROGN': 'NIFTY 500',
+    'ARVEE': 'NIFTY 500',
+    'INOXGREEN': 'NIFTY 500',
+    'MARINE': 'NIFTY 500',
+    'GARUDA': 'NIFTY 500',
+    'JAGSNPHARM': 'NIFTY 500',
+    'KTKBANK': 'NIFTY 500',
+    'CHEMCON': 'NIFTY 500',
+    'AFSL': 'NIFTY 500',
+    'PENIND': 'NIFTY 500',
+    'PFOCUS': 'NIFTY 500',
+    'EIEL': 'NIFTY 500',
+    'RHL': 'NIFTY 500',
+    'PACEDIGITK': 'NIFTY 500',
+    'NAHARSPING': 'NIFTY 500',
+    'KANPRPLA': 'NIFTY 500',
+    'GLOBALVECT': 'NIFTY 500',
+    'NCLIND': 'NIFTY 500',
+    'BBTCL': 'NIFTY 500',
+    'MINDTECK': 'NIFTY 500',
+    'NITIRAJ': 'NIFTY 500',
+    'SHRINGARMS': 'NIFTY 500',
+    'DPWIRES': 'NIFTY 500',
+    'GOKULAGRO': 'NIFTY 500',
+    'KITEX': 'NIFTY 500',
+    'RESPONIND': 'NIFTY 500',
+    'INDIQUBE': 'NIFTY 500',
+    'SHANTIGOLD': 'NIFTY 500',
+    'MARKSANS': 'NIFTY 500',
+    'EMMVEE': 'NIFTY 500',
+    'ITCHOTELS': 'NIFTY 500',
+    'SHALBY': 'NIFTY 500',
+    'ENGINERSIN': 'NIFTY 500',
+    'RAJESHEXPO': 'NIFTY 500',
+    'MAXIND': 'NIFTY 500',
+    'INDOFARM': 'NIFTY 500',
+    '20MICRONS': 'NIFTY 500',
+    'SAKSOFT': 'NIFTY 500',
+    'VERANDA': 'NIFTY 500',
+    'NATCAPSUQ': 'NIFTY 500',
+    'SSWL': 'NIFTY 500',
+    'GPPL': 'NIFTY 500',
+    'TIMETECHNO': 'NIFTY 500',
+    'PRABHA': 'NIFTY 500',
+    'CORDSCABLE': 'NIFTY 500',
+    'ORBTEXP': 'NIFTY 500',
+    'LIKHITHA': 'NIFTY 500',
+    'CGCL': 'NIFTY 500',
+    'CASTROLIND': 'NIFTY 500',
+    'AARON': 'NIFTY 500',
+    'MVGJL': 'NIFTY 500',
+    'UFBL': 'NIFTY 500',
+    'GREAVESCOT': 'NIFTY 500',
+    'EUROBOND': 'NIFTY 500',
+    'SHREYANIND': 'NIFTY 500',
+    'KCP': 'NIFTY 500',
+    'LFIC': 'NIFTY 500',
+    'TRANSWORLD': 'NIFTY 500',
+    'ORIENTELEC': 'NIFTY 500',
+    'SAMHI': 'NIFTY 500',
+    'PROSTARM': 'NIFTY 500',
+    'BHARATWIRE': 'NIFTY 500',
+    'BHARATSE': 'NIFTY 500',
+    'BALMLAWRIE': 'NIFTY 500',
+    'KROSS': 'NIFTY 500',
+    'IKIO': 'NIFTY 500',
+    'BHAGERIA': 'NIFTY 500',
+    'YATRA': 'NIFTY 500',
+    'AEROFLEX': 'NIFTY 500',
+    'SHIVATEX': 'NIFTY 500',
+    'WALCHANNAG': 'NIFTY 500',
+    'HEIDELBERG': 'NIFTY 500',
+    'MUTHOOTMF': 'NIFTY 500',
+    'AURUM': 'NIFTY 500',
+    'AMNPLST': 'NIFTY 500',
+    'MANCREDIT': 'NIFTY 500',
+    'LORDSCHLO': 'NIFTY 500',
+    'SPMLINFRA': 'NIFTY 500',
+    'LOKESHMACH': 'NIFTY 500',
+    'SHAREINDIA': 'NIFTY 500',
+    'UDS': 'NIFTY 500',
+    'GSFC': 'NIFTY 500',
+    'NIACL': 'NIFTY 500',
+    'IITL': 'NIFTY 500',
+    'WEL': 'NIFTY 500',
+    'DCBBANK': 'NIFTY 500',
+    'KHADIM': 'NIFTY 500',
+    'UGROCAP': 'NIFTY 500',
+    'LXCHEM': 'NIFTY 500',
+    'SUVEN': 'NIFTY 500',
+    'ELIN': 'NIFTY 500',
+    'MARKOLINES': 'NIFTY 500',
+    'IPL': 'NIFTY 500',
+    'HITECHCORP': 'NIFTY 500',
+    'PYRAMID': 'NIFTY 500',
+    'SHK': 'NIFTY 500',
+    'HEXATRADEX': 'NIFTY 500',
+    'BAJEL': 'NIFTY 500',
+    'CONSOFINVT': 'NIFTY 500',
+    'FINPIPE': 'NIFTY 500',
+    'ORIENTCEM': 'NIFTY 500',
+    'AVG': 'NIFTY 500',
+    'RELTD': 'NIFTY 500',
+    'ASHOKA': 'NIFTY 500',
+    'VINCOFE': 'NIFTY 500',
+    'MEESHO': 'NIFTY 500',
+    'URAVIDEF': 'NIFTY 500',
+    'CHEMBOND': 'NIFTY 500',
+    'TBZ': 'NIFTY 500',
+    'DCMSRIND': 'NIFTY 500',
+    'CAMLINFINE': 'NIFTY 500',
+    'PLASTIBLEN': 'NIFTY 500',
+    'LEMONTREE': 'NIFTY 500',
+    'RUPA': 'NIFTY 500',
+    'BSL': 'NIFTY 500',
+    'DCXINDIA': 'NIFTY 500',
+    'DTIL': 'NIFTY 500',
+    'GICHSGFIN': 'NIFTY 500',
+    'HARRMALAYA': 'NIFTY 500',
+    'AYMSYNTEX': 'NIFTY 500',
+    'JINDALSAW': 'NIFTY 500',
+    'STARPAPER': 'NIFTY 500',
+    'SCHAND': 'NIFTY 500',
+    'CHEMBONDCH': 'NIFTY 500',
+    'MOLDTECH': 'NIFTY 500',
+    'SYSTMTXC': 'NIFTY 500',
+    'TAINWALCHM': 'NIFTY 500',
+    'BELRISE': 'NIFTY 500',
+    'RATNAVEER': 'NIFTY 500',
+    'NOCIL': 'NIFTY 500',
+    'FUSION': 'NIFTY 500',
+    'HISARMETAL': 'NIFTY 500',
+    'HERCULES': 'NIFTY 500',
+    'GKENERGY': 'NIFTY 500',
+    'ADSL': 'NIFTY 500',
+    'SCODATUBES': 'NIFTY 500',
+    'IRCON': 'NIFTY 500',
+    'SGLTL': 'NIFTY 500',
+    'LOTUSDEV': 'NIFTY 500',
+    'RAMAPHO': 'NIFTY 500',
+    'MAANALU': 'NIFTY 500',
+    'PARADEEP': 'NIFTY 500',
+    'PTC': 'NIFTY 500',
+    'PRECAM': 'NIFTY 500',
+    'WIPL': 'NIFTY 500',
+    'RSWM': 'NIFTY 500',
+    'NATHBIOGEN': 'NIFTY 500',
+    'AVANTEL': 'NIFTY 500',
+    'HINDOILEXP': 'NIFTY 500',
+    'KALAMANDIR': 'NIFTY 500',
+    'VGL': 'NIFTY 500',
+    'SAMMAANCAP': 'NIFTY 500',
+    'MRPL': 'NIFTY 500',
+    'RACE': 'NIFTY 500',
+    'BIRLAMONEY': 'NIFTY 500',
+    'SUKHJITS': 'NIFTY 500',
+    'GIPCL': 'NIFTY 500',
+    'IVP': 'NIFTY 500',
+    'SUPERHOUSE': 'NIFTY 500',
+    'AEQUS': 'NIFTY 500',
+    'JMFINANCIL': 'NIFTY 500',
+    'TARC': 'NIFTY 500',
+    'KNRCON': 'NIFTY 500',
+    'GROWW': 'NIFTY 500',
+    'JOCIL': 'NIFTY 500',
+    'ADANIPOWER': 'NIFTY 500',
+    'BLISSGVS': 'NIFTY 500',
+    'SATIN': 'NIFTY 500',
+    'JTEKTINDIA': 'NIFTY 500',
+    'ARKADE': 'NIFTY 500',
+    'TNPL': 'NIFTY 500',
+    'FEDFINA': 'NIFTY 500',
+    'GANGESSECU': 'NIFTY 500',
+    'KRONOX': 'NIFTY 500',
+    'WORTHPERI': 'NIFTY 500',
+    'GEMAROMA': 'NIFTY 500',
+    'NAVNETEDUL': 'NIFTY 500',
+    'RBZJEWEL': 'NIFTY 500',
+    'DIACABS': 'NIFTY 500',
+    'MODISONLTD': 'NIFTY 500',
+    'DIGITIDE': 'NIFTY 500',
+    'GPTHEALTH': 'NIFTY 500',
+    'THOMASCOOK': 'NIFTY 500',
+    'MANBA': 'NIFTY 500',
+    'RCF': 'NIFTY 500',
+    'RELCHEMQ': 'NIFTY 500',
+    'CROWN': 'NIFTY 500',
+    'WELSPUNLIV': 'NIFTY 500',
+    'UNIENTER': 'NIFTY 500',
+    'SURYODAY': 'NIFTY 500',
+    'MUKANDLTD': 'NIFTY 500',
+    'SPARC': 'NIFTY 500',
+    'GULPOLY': 'NIFTY 500',
+    'MONEYBOXX': 'NIFTY 500',
+    'PWL': 'NIFTY 500',
+    'MANAKCOAT': 'NIFTY 500',
+    'TVTODAY': 'NIFTY 500',
+    'VMM': 'NIFTY 500',
+    'PRAKASH': 'NIFTY 500',
+    'HEMIPROP': 'NIFTY 500',
+    'DEVYANI': 'NIFTY 500',
+    'PIGL': 'NIFTY 500',
+    'TOLINS': 'NIFTY 500',
+    'AHLEAST': 'NIFTY 500',
+    'KAKATCEM': 'NIFTY 500',
+    'BIRLACABLE': 'NIFTY 500',
+    'ROLEXRINGS': 'NIFTY 500',
+    'SMARTLINK': 'NIFTY 500',
+    'SOMICONVEY': 'NIFTY 500',
+    'HPIL': 'NIFTY 500',
+    'PARKHOTELS': 'NIFTY 500',
+    'LAXMIINDIA': 'NIFTY 500',
+    'BOMDYEING': 'NIFTY 500',
+    'MANINFRA': 'NIFTY 500',
+    'DHAMPURSUG': 'NIFTY 500',
+    'KOPRAN': 'NIFTY 500',
+    'PRSMJOHNSN': 'NIFTY 500',
+    'RGL': 'NIFTY 500',
+    'BANARBEADS': 'NIFTY 500',
+    'JAICORPLTD': 'NIFTY 500',
+    'AGRITECH': 'NIFTY 500',
+    'LOTUSEYE': 'NIFTY 500',
+    'DCMNVL': 'NIFTY 500',
+    'URBANCO': 'NIFTY 500',
+    'HECPROJECT': 'NIFTY 500',
+    'ABLBL': 'NIFTY 500',
+    'INDOUS': 'NIFTY 500',
+    'VSTL': 'NIFTY 500',
+    'MAHEPC': 'NIFTY 500',
+    'KOTHARIPET': 'NIFTY 500',
+    'TEXRAIL': 'NIFTY 500',
+    'BOROSCI': 'NIFTY 500',
+    'ARISINFRA': 'NIFTY 500',
+    'JAMNAAUTO': 'NIFTY 500',
+    'GANDHAR': 'NIFTY 500',
+    'LAMBODHARA': 'NIFTY 500',
+    'MUNJALSHOW': 'NIFTY 500',
+    'REDTAPE': 'NIFTY 500',
+    'PVSL': 'NIFTY 500',
+    'VRAJ': 'NIFTY 500',
+    'APCL': 'NIFTY 500',
+    'STCINDIA': 'NIFTY 500',
+    'AARVI': 'NIFTY 500',
+    'CANHLIFE': 'NIFTY 500',
+    'RNBDENIMS': 'NIFTY 500',
+    'ADVANCE': 'NIFTY 500',
+    'WCIL': 'NIFTY 500',
+    'JSWCEMENT': 'NIFTY 500',
+    'REPL': 'NIFTY 500',
+    'RUCHIRA': 'NIFTY 500',
+    'MASTERTR': 'NIFTY 500',
+    'DBREALTY': 'NIFTY 500',
+    'UNIECOM': 'NIFTY 500',
+    'DBEIL': 'NIFTY 500',
+    'EKC': 'NIFTY 500',
+    'INDOAMIN': 'NIFTY 500',
+    'RICOAUTO': 'NIFTY 500',
+    'REMSONSIND': 'NIFTY 500',
+    'GAEL': 'NIFTY 500',
+    'SECMARK': 'NIFTY 500',
+    'HIMATSEIDE': 'NIFTY 500',
+    'SPECIALITY': 'NIFTY 500',
+    'THEINVEST': 'NIFTY 500',
+    'UCAL': 'NIFTY 500',
+    'GMRP&UI': 'NIFTY 500',
+    'ENIL': 'NIFTY 500',
+    'AVROIND': 'NIFTY 500',
+    'CPCAP': 'NIFTY 500',
+    'BANSWRAS': 'NIFTY 500',
+    'RKSWAMY': 'NIFTY 500',
+    'SHANKARA': 'NIFTY 500',
+    'TOKYOPLAST': 'NIFTY 500',
+    'LINC': 'NIFTY 500',
+    'DREAMFOLKS': 'NIFTY 500',
+    'EXICOM': 'NIFTY 500',
+    'MUFIN': 'NIFTY 500',
+    'EMIL': 'NIFTY 500',
+    'TVSSCS': 'NIFTY 500',
+    'NELCAST': 'NIFTY 500',
+    'AUSOMENT': 'NIFTY 500',
+    'NAHARINDUS': 'NIFTY 500',
+    'SHEMAROO': 'NIFTY 500',
+    'PALASHSECU': 'NIFTY 500',
+    'BALAJITELE': 'NIFTY 500',
+    'JKIPL': 'NIFTY 500',
+    'VETO': 'NIFTY 500',
+    'SDBL': 'NIFTY 500',
+    'ESTER': 'NIFTY 500',
+    'RAIN': 'NIFTY 500',
+    'GILLANDERS': 'NIFTY 500',
+    'ORIENTHOT': 'NIFTY 500',
+    'MENONBE': 'NIFTY 500',
+    'TEXINFRA': 'NIFTY 500',
+    'SINTERCOM': 'NIFTY 500',
+    'AMANTA': 'NIFTY 500',
+    'SBFC': 'NIFTY 500',
+    'PAKKA': 'NIFTY 500',
+    'TNPETRO': 'NIFTY 500',
+    'TOUCHWOOD': 'NIFTY 500',
+    'AIROLAM': 'NIFTY 500',
+    'EDELWEISS': 'NIFTY 500',
+    'GPTINFRA': 'NIFTY 500',
+    'THEMISMED': 'NIFTY 500',
+    'MODIRUBBER': 'NIFTY 500',
+    'OMINFRAL': 'NIFTY 500',
+    'J&KBANK': 'NIFTY 500',
+    'RPPINFRA': 'NIFTY 500',
+    'ALEMBICLTD': 'NIFTY 500',
+    'KECL': 'NIFTY 500',
+    'BEDMUTHA': 'NIFTY 500',
+    'STLTECH': 'NIFTY 500',
+    'GTPL': 'NIFTY 500',
+    'WEIZMANIND': 'NIFTY 500',
+    'FINKURVE': 'NIFTY 500',
+    'IDBI': 'NIFTY 500',
+    'ISFT': 'NIFTY 500',
+    'OMAXAUTO': 'NIFTY 500',
+    'DONEAR': 'NIFTY 500',
+    'PDMJEPAPER': 'NIFTY 500',
+    'EXCELSOFT': 'NIFTY 500',
+    'BSHSL': 'NIFTY 500',
+    'KHAITANLTD': 'NIFTY 500',
+    'BROOKS': 'NIFTY 500',
+    'MUFTI': 'NIFTY 500',
+    'INDSWFTLAB': 'NIFTY 500',
+    'SMLT': 'NIFTY 500',
+    'APTECHT': 'NIFTY 500',
+    'STEELCITY': 'NIFTY 500',
+    'EMMBI': 'NIFTY 500',
+    'BAJAJHFL': 'NIFTY 500',
+    'MAHAPEXLTD': 'NIFTY 500',
+    'CUBEXTUB': 'NIFTY 500',
+    'SAMBHV': 'NIFTY 500',
+    'OCCLLTD': 'NIFTY 500',
+    'NAVKARCORP': 'NIFTY 500',
+    'ARIHANTCAP': 'NIFTY 500',
+    'INTLCONV': 'NIFTY 500',
+    'ZEEL': 'NIFTY 500',
+    'VIKRAN': 'NIFTY 500',
+    'SANSTAR': 'NIFTY 500',
+    'ATLASCYCLE': 'NIFTY 500',
+    'ARCHIDPLY': 'NIFTY 500',
+    'DCM': 'NIFTY 500',
+    'PAR': 'NIFTY 500',
+    'HITECH': 'NIFTY 500',
+    'NTPCGREEN': 'NIFTY 500',
+    'KUANTUM': 'NIFTY 500',
+    'NITCO': 'NIFTY 500',
+    'KOKUYOCMLN': 'NIFTY 500',
+    'WEBELSOLAR': 'NIFTY 500',
+    'NDLVENTURE': 'NIFTY 500',
+    'SPORTKING': 'NIFTY 500',
+    'BEPL': 'NIFTY 500',
+    'EMAMIPAP': 'NIFTY 500',
+    'SHREDIGCEM': 'NIFTY 500',
+    'OMFREIGHT': 'NIFTY 500',
+    'JAYBARMARU': 'NIFTY 500',
+    'INSPIRISYS': 'NIFTY 500',
+    'NIITLTD': 'NIFTY 500',
+    'JAYSREETEA': 'NIFTY 500',
+    'KRITI': 'NIFTY 500',
+    'ZODIACLOTH': 'NIFTY 500',
+    'AERONEU': 'NIFTY 500',
+    'SAURASHCEM': 'NIFTY 500',
+    'NFL': 'NIFTY 500',
+    'DOLATALGO': 'NIFTY 500',
+    'EMAMIREAL': 'NIFTY 500',
+    'SARLAPOLY': 'NIFTY 500',
+    'CINELINE': 'NIFTY 500',
+    'SHRIRAMPPS': 'NIFTY 500',
+    'SMCGLOBAL': 'NIFTY 500',
+    'IGCL': 'NIFTY 500',
+    'MAWANASUG': 'NIFTY 500',
+    'WSI': 'NIFTY 500',
+    'SINCLAIR': 'NIFTY 500',
+    'IOLCP': 'NIFTY 500',
+    'SERVOTECH': 'NIFTY 500',
+    'KHAICHEM': 'NIFTY 500',
+    'LOVABLE': 'NIFTY 500',
+    'CLEDUCATE': 'NIFTY 500',
+    'XCHANGING': 'NIFTY 500',
+    'NDTV': 'NIFTY 500',
+    'ALKALI': 'NIFTY 500',
+    'FOCUS': 'NIFTY 500',
+    'ATAM': 'NIFTY 500',
+    'SUPREME': 'NIFTY 500',
+    'SSDL': 'NIFTY 500',
+    'SPIC': 'NIFTY 500',
+    'ALPA': 'NIFTY 500',
+    'TOTAL': 'NIFTY 500',
+    'AEROENTER': 'NIFTY 500',
+    'DBOL': 'NIFTY 500',
+    'RMDRIP': 'NIFTY 500',
+    'PNBGILTS': 'NIFTY 500',
+    'ANUHPHR': 'NIFTY 500',
+    'MUNJALAU': 'NIFTY 500',
+    'GANESHBE': 'NIFTY 500',
+    'ADL': 'NIFTY 500',
+    'JMA': 'NIFTY 500',
+    'LYKALABS': 'NIFTY 500',
+    'UFO': 'NIFTY 500',
+    'ORIENTLTD': 'NIFTY 500',
+    'ANDHRSUGAR': 'NIFTY 500',
+    'KANORICHEM': 'NIFTY 500',
+    'TARACHAND': 'NIFTY 500',
+    'NIVABUPA': 'NIFTY 500',
+    'VERTOZ': 'NIFTY 500',
+    'RUBFILA': 'NIFTY 500',
+    'AUTOIND': 'NIFTY 500',
+    'RADHIKAJWE': 'NIFTY 500',
+    'BALPHARMA': 'NIFTY 500',
+    'FOODSIN': 'NIFTY 500',
+    'ACL': 'NIFTY 500',
+    'ZIMLAB': 'NIFTY 500',
+    'BRIGHOTEL': 'NIFTY 500',
+    'MADRASFERT': 'NIFTY 500',
+    'VPRPL': 'NIFTY 500',
+    'JAYNECOIND': 'NIFTY 500',
+    'KOTHARIPRO': 'NIFTY 500',
+    'EMBDL': 'NIFTY 500',
+    'GHCLTEXTIL': 'NIFTY 500',
+    'REGAAL': 'NIFTY 500',
+    'SILGO': 'NIFTY 500',
+    'DELTAMAGNT': 'NIFTY 500',
+    'ELECTCAST': 'NIFTY 500',
+    'DELTACORP': 'NIFTY 500',
+    'JAGRAN': 'NIFTY 500',
+    'GEOJITFSL': 'NIFTY 500',
+    'TRIGYN': 'NIFTY 500',
+    'SUMIT': 'NIFTY 500',
+    'SHAHALLOYS': 'NIFTY 500',
+    'MITCON': 'NIFTY 500',
+    'KREBSBIO': 'NIFTY 500',
+    'BLUSPRING': 'NIFTY 500',
+    'LAGNAM': 'NIFTY 500',
+    'RBA': 'NIFTY 500',
+    'ANDHRAPAP': 'NIFTY 500',
+    'SATIA': 'NIFTY 500',
+    'VALIANTLAB': 'NIFTY 500',
+    'AVTNPL': 'NIFTY 500',
+    'TPLPLASTEH': 'NIFTY 500',
+    'TFCILTD': 'NIFTY 500',
+    'VISAKAIND': 'NIFTY 500',
+    'BIGBLOC': 'NIFTY 500',
+    'HMVL': 'NIFTY 500',
+    'UNIVASTU': 'NIFTY 500',
+    'ISHANCH': 'NIFTY 500',
+    'BANKA': 'NIFTY 500',
+    'NKIND': 'NIFTY 500',
+    'OILCOUNTUB': 'NIFTY 500',
+    'HGM': 'NIFTY 500',
+    'OMAXE': 'NIFTY 500',
+    'KRITINUT': 'NIFTY 500',
+    'MOL': 'NIFTY 500',
+    'ASIANTILES': 'NIFTY 500',
+    'RAJOOENG': 'NIFTY 500',
+    'SANGHIIND': 'NIFTY 500',
+    'MANAKSIA': 'NIFTY 500',
+    'GLOBECIVIL': 'NIFTY 500',
+    'MUKTAARTS': 'NIFTY 500',
+    'ROTO': 'NIFTY 500',
+    'SHIVAMILLS': 'NIFTY 500',
+    'HILINFRA': 'NIFTY 500',
+    'MANALIPETC': 'NIFTY 500',
+    'JTLIND': 'NIFTY 500',
+    'JAIBALAJI': 'NIFTY 500',
+    'DCW': 'NIFTY 500',
+    'NRL': 'NIFTY 500',
+    'GATEWAY': 'NIFTY 500',
+    'GLOTTIS': 'NIFTY 500',
+    'BMWVENTLTD': 'NIFTY 500',
+    'SHALPAINTS': 'NIFTY 500',
+    'SRD': 'NIFTY 500',
+    'DJML': 'NIFTY 500',
+    'OSWALAGRO': 'NIFTY 500',
+    'GFLLIMITED': 'NIFTY 500',
+    'EQUITASBNK': 'NIFTY 500',
+    'VASWANI': 'NIFTY 500',
+    'SURYALAXMI': 'NIFTY 500',
+    'ADVANIHOTR': 'NIFTY 500',
+    'LLOYDSENT': 'NIFTY 500',
+    'PRITI': 'NIFTY 500',
+    'RSSOFTWARE': 'NIFTY 500',
+    'MANAKSTEEL': 'NIFTY 500',
+    'BPL': 'NIFTY 500',
+    'MAHABANK': 'NIFTY 500',
+    'ONMOBILE': 'NIFTY 500',
+    'SIGIND': 'NIFTY 500',
+    'OBCL': 'NIFTY 500',
+    'MMTC': 'NIFTY 500',
+    'ANIKINDS': 'NIFTY 500',
+    'RKEC': 'NIFTY 500',
+    'ROSSELLIND': 'NIFTY 500',
+    'VMSTMT': 'NIFTY 500',
+    'UJJIVANSFB': 'NIFTY 500',
+    'FILATEX': 'NIFTY 500',
+    'ELGIRUBCO': 'NIFTY 500',
+    'RADIANTCMS': 'NIFTY 500',
+    'BODALCHEM': 'NIFTY 500',
+    'PASUPTAC': 'NIFTY 500',
+    'BYKE': 'NIFTY 500',
+    'GOLDTECH': 'NIFTY 500',
+    'LLOYDSENGG': 'NIFTY 500',
+    'ONEPOINT': 'NIFTY 500',
+    'KARMAENG': 'NIFTY 500',
+    'TARMAT': 'NIFTY 500',
+    'VIDYAWIRES': 'NIFTY 500',
+    'MEDICO': 'NIFTY 500',
+    'BLKASHYAP': 'NIFTY 500',
+    'AMJLAND': 'NIFTY 500',
+    'AHLADA': 'NIFTY 500',
+    'AMDIND': 'NIFTY 500',
+    'ROML': 'NIFTY 500',
+    'TEXMOPIPES': 'NIFTY 500'
 }
 
 # -----------------------------
@@ -101,7 +1649,7 @@ def _safe_float(x, d=0.0) -> float:
 
 def _safe_int(x, d=0) -> int:
     try:
-        return int(float(x))  # sometimes "123.0"
+        return int(x)
     except Exception:
         return d
 
@@ -112,37 +1660,6 @@ def _pick_field(fieldnames: List[str], candidates: List[str]) -> Optional[str]:
             return lower_map[c.lower()]
     return None
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "y", "on")
-
-def _build_headers(client_id: str, access_token: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """
-    Dhan often expects BOTH:
-      - client-id
-      - access-token
-    """
-    h = {
-        "Accept": "application/json, text/csv;q=0.9, */*;q=0.8",
-        "User-Agent": "Nexus-Sync/1.0",
-    }
-    if client_id:
-        h["client-id"] = client_id
-    if access_token:
-        h["access-token"] = access_token
-    if extra:
-        h.update(extra)
-    return h
-
-def _unwrap_payload(obj: Any) -> Any:
-    """
-    Some endpoints return {"data": ...} or {"payload": ...}.
-    Try to unwrap common containers.
-    """
-    if isinstance(obj, dict):
-        for k in ("data", "payload", "result"):
-            if k in obj and obj[k] is not None:
-                return obj[k]
-    return obj
 
 # -----------------------------
 # Global async rate limiter
@@ -165,6 +1682,7 @@ class _GlobalRateLimiter:
 
 _RATE = _GlobalRateLimiter(MIN_REQ_INTERVAL_SEC)
 
+
 # -----------------------------
 # HTTP helpers (urllib) + retry/backoff
 # -----------------------------
@@ -176,19 +1694,13 @@ def _http_get_bytes(url: str, headers: Optional[Dict[str, str]] = None, timeout:
 
 def _http_post_json_once(url: str, payload: dict, headers: Optional[Dict[str, str]] = None, timeout: int = 60) -> dict:
     body = json.dumps(payload).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
+    hdrs = {"Content-Type": "application/json"}
     if headers:
         hdrs.update(headers)
     req = request.Request(url, data=body, headers=hdrs, method="POST")
     with request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read().decode("utf-8", errors="ignore").strip()
-        if not data:
-            return {}
-        try:
-            return json.loads(data)
-        except Exception:
-            # Some gateways send non-json errors with 200 (rare)
-            return {"_raw": data[:2000]}
+        data = resp.read().decode("utf-8", errors="ignore")
+        return json.loads(data) if data else {}
 
 def _extract_retry_after_seconds(err_obj: Exception) -> Optional[float]:
     try:
@@ -201,10 +1713,6 @@ def _extract_retry_after_seconds(err_obj: Exception) -> Optional[float]:
     return None
 
 async def _http_post_json_retry(url: str, payload: dict, headers: Optional[Dict[str, str]] = None, timeout: int = 60) -> dict:
-    """
-    Retries on 429/5xx/timeout/transient.
-    Uses exponential backoff + jitter; respects Retry-After when available.
-    """
     last_exc: Optional[Exception] = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -215,7 +1723,6 @@ async def _http_post_json_retry(url: str, payload: dict, headers: Optional[Dict[
         except Exception as e:
             last_exc = e
             status = None
-
             if isinstance(e, error.HTTPError):
                 status = getattr(e, "code", None)
 
@@ -226,6 +1733,10 @@ async def _http_post_json_retry(url: str, payload: dict, headers: Optional[Dict[
                 retryable = True
             elif isinstance(e, (error.URLError, TimeoutError)):
                 retryable = True
+
+            # Do not spam retries on auth failures
+            if status in (401, 403):
+                raise
 
             if not retryable or attempt >= MAX_RETRIES:
                 raise
@@ -238,20 +1749,18 @@ async def _http_post_json_retry(url: str, payload: dict, headers: Optional[Dict[
                 jitter = random.uniform(0.0, base * 0.25)
                 sleep_s = min(BACKOFF_MAX, base + jitter)
 
-            logger.warning(
-                f"Retryable HTTP error (attempt {attempt}/{MAX_RETRIES}) -> sleep {sleep_s:.2f}s | "
-                f"status={status} | err={e}"
-            )
+            logger.warning(f"Retryable HTTP error (attempt {attempt}/{MAX_RETRIES}) -> sleep {sleep_s:.2f}s | err={e}")
             await asyncio.sleep(sleep_s)
 
     if last_exc:
         raise last_exc
     return {}
 
+
 # -----------------------------
 # Instrument list download (CSV or JSON)
 # -----------------------------
-def _parse_instruments_csv(text: str, wanted: set) -> Dict[str, str]:
+def _parse_instruments_csv(text: str) -> Dict[str, str]:
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise RuntimeError("Instrument CSV has no headers")
@@ -271,7 +1780,9 @@ def _parse_instruments_csv(text: str, wanted: set) -> Dict[str, str]:
     if not sym_col or not sec_col:
         raise RuntimeError(f"Cannot detect columns. headers={reader.fieldnames[:30]}")
 
+    wanted = set(k.upper() for k in STOCK_INDEX_MAPPING.keys())
     out: Dict[str, str] = {}
+
     for row in reader:
         sym = (row.get(sym_col) or "").strip().upper()
         if sym not in wanted:
@@ -288,65 +1799,47 @@ def _parse_instruments_csv(text: str, wanted: set) -> Dict[str, str]:
 
     return out
 
-def _parse_instruments_json(obj: Any, wanted: set) -> Dict[str, str]:
-    obj = _unwrap_payload(obj)
+def _parse_instruments_json(text: str) -> Dict[str, str]:
+    """
+    Best-effort parse for endpoints that return JSON arrays/objects.
+    """
+    obj = json.loads(text)
+    items = None
 
-    # most common: list[dict]
-    items: List[dict] = []
+    # Common patterns: list[...] or {"data":[...]} or {"result":[...]}
     if isinstance(obj, list):
-        items = [x for x in obj if isinstance(x, dict)]
+        items = obj
     elif isinstance(obj, dict):
-        # maybe {"instruments": [...]}
-        for k in ("instruments", "instrument", "records", "items"):
-            v = obj.get(k)
-            if isinstance(v, list):
-                items = [x for x in v if isinstance(x, dict)]
+        for k in ("data", "result", "records", "instruments"):
+            if isinstance(obj.get(k), list):
+                items = obj.get(k)
                 break
 
-    if not items:
-        raise RuntimeError("Instrument JSON has no list payload")
+    if not isinstance(items, list):
+        raise RuntimeError("Unsupported instrument JSON format")
 
+    wanted = set(k.upper() for k in STOCK_INDEX_MAPPING.keys())
     out: Dict[str, str] = {}
 
-    # Candidate keys
-    sym_keys = ["tradingSymbol", "tradingsymbol", "TRADINGSYMBOL", "symbol", "SYMBOL", "customSymbol", "SEM_TRADING_SYMBOL"]
-    sid_keys = ["securityId", "SECURITY_ID", "securityID", "SEM_SECURITY_ID", "SEM_SMST_SECURITY_ID"]
-    exch_keys = ["exchangeSegment", "EXCHANGE_SEGMENT", "exchange", "SEM_EXM_EXCH_ID"]
-
-    def pick(d: dict, keys: List[str]) -> str:
-        for k in keys:
-            if k in d and d[k] is not None:
-                return str(d[k]).strip()
-        # try case-insensitive
-        lower = {str(k).lower(): k for k in d.keys()}
-        for k in keys:
-            lk = str(k).lower()
-            if lk in lower:
-                return str(d.get(lower[lk]) or "").strip()
-        return ""
-
     for it in items:
-        sym = pick(it, sym_keys).upper()
-        if not sym or sym not in wanted:
+        if not isinstance(it, dict):
+            continue
+        sym = (it.get("tradingSymbol") or it.get("tradingsymbol") or it.get("symbol") or it.get("customSymbol") or "").strip().upper()
+        if sym not in wanted:
             continue
 
-        exv = pick(it, exch_keys).upper()
-        if exv and ("NSE" not in exv and "NSE_EQ" not in exv and exv != "NSE"):
-            continue
-
-        sid = pick(it, sid_keys)
+        sid = (it.get("securityId") or it.get("securityID") or it.get("SECURITY_ID") or it.get("semSmstSecurityId") or it.get("SEM_SMST_SECURITY_ID") or "").strip()
         if sid:
             out[sym] = sid
 
     return out
 
-async def _download_symbol_to_security_id_map(client_id: str, access_token: str) -> Dict[str, str]:
+async def _download_symbol_to_security_id_map(access_token: str) -> Dict[str, str]:
     """
-    Downloads Dhan instrument list (CSV or JSON) and returns {TRADINGSYMBOL: securityId}
+    Downloads Dhan instrument list and returns {TRADINGSYMBOL: securityId} for NSE_EQ universe.
     Keeps only symbols present in STOCK_INDEX_MAPPING.
     """
-    wanted = set(k.upper() for k in STOCK_INDEX_MAPPING.keys())
-    headers = _build_headers(client_id, access_token)
+    headers = {"access-token": access_token}
 
     last_err = None
     for url in DHAN_INSTRUMENT_URLS:
@@ -358,18 +1851,14 @@ async def _download_symbol_to_security_id_map(client_id: str, access_token: str)
             text = raw.decode("utf-8", errors="ignore").strip()
 
             # Decide CSV vs JSON
-            if url.lower().endswith(".csv") or ("," in text.splitlines()[0] and "security" in text.lower()):
-                out = _parse_instruments_csv(text, wanted)
+            out: Dict[str, str]
+            if text.startswith("{") or text.startswith("["):
+                out = _parse_instruments_json(text)
             else:
-                try:
-                    obj = json.loads(text)
-                except Exception:
-                    # sometimes still CSV without .csv extension
-                    out = _parse_instruments_csv(text, wanted)
-                else:
-                    out = _parse_instruments_json(obj, wanted)
+                out = _parse_instruments_csv(text)
 
-            logger.info(f"Instrument map resolved for {len(out)} / {len(wanted)} symbols")
+            wanted = len(STOCK_INDEX_MAPPING)
+            logger.info(f"Instrument map resolved for {len(out)} / {wanted} symbols")
             return out
 
         except Exception as e:
@@ -377,6 +1866,7 @@ async def _download_symbol_to_security_id_map(client_id: str, access_token: str)
             logger.warning(f"Instrument list failed from {url}: {e}")
 
     raise RuntimeError(f"Instrument list download failed. Last error: {last_err}")
+
 
 # -----------------------------
 # SMA computation
@@ -408,18 +1898,7 @@ def _compute_sma_from_records(records: List[dict]) -> float:
     return round(avg_vol_per_minute, 2)
 
 def _dhan_daily_to_records(resp: dict) -> List[dict]:
-    """
-    Dhan daily historical typically returns arrays: open/high/low/close/volume/timestamp.
-    Some variants wrap payload (data/result). We unwrap defensively.
-    """
-    if not isinstance(resp, dict):
-        return []
-
-    base = _unwrap_payload(resp)
-    if isinstance(base, dict):
-        resp = base
-
-    ts = resp.get("timestamp") or resp.get("timestamps") or []
+    ts = resp.get("timestamp") or []
     o = resp.get("open") or []
     h = resp.get("high") or []
     l = resp.get("low") or []
@@ -427,9 +1906,6 @@ def _dhan_daily_to_records(resp: dict) -> List[dict]:
     v = resp.get("volume") or []
 
     n = min(len(ts), len(o), len(h), len(l), len(c), len(v))
-    if n <= 0:
-        return []
-
     out: List[dict] = []
     for i in range(n):
         dt_utc = datetime.fromtimestamp(int(ts[i]), tz=timezone.utc)
@@ -444,24 +1920,21 @@ def _dhan_daily_to_records(resp: dict) -> List[dict]:
         })
     return out
 
+
 # -----------------------------
 # One symbol fetch
 # -----------------------------
+# status: "OK" | "FILTERED" | "ERROR"
 async def _fetch_one(
-    client_id: str,
     access_token: str,
     security_id: str,
     symbol: str,
     sem: asyncio.Semaphore,
 ) -> Tuple[int, str, str, float, Optional[dict]]:
-    """
-    Fetch Dhan daily historical -> compute SMA -> build market_data.
-    token stored in Redis = securityId (int)
-    """
     async with sem:
         try:
             today = _now_ist().date()
-            to_d: date = today + timedelta(days=1)  # toDate non-inclusive; +1 includes today if available
+            to_d: date = today + timedelta(days=1)   # toDate is non-inclusive; +1 includes today if available
             from_d: date = to_d - timedelta(days=HIST_LOOKBACK_DAYS)
 
             payload = {
@@ -475,7 +1948,7 @@ async def _fetch_one(
             }
 
             url = f"{DHAN_BASE}/v2/charts/historical"
-            headers = _build_headers(client_id, access_token)
+            headers = {"access-token": access_token}
 
             resp = await _http_post_json_retry(url, payload, headers, 60)
             records = _dhan_daily_to_records(resp)
@@ -512,6 +1985,7 @@ async def _fetch_one(
             if REQ_SLEEP > 0:
                 await asyncio.sleep(REQ_SLEEP)
 
+
 # -----------------------------
 # Persist results
 # -----------------------------
@@ -528,7 +2002,7 @@ async def _persist_results(results: List[Tuple[int, str, str, float, Optional[di
     save_tasks = []
     delete_tasks = []
 
-    for (t_id, sym, status, _sma, md) in results:
+    for (t_id, sym, status, sma, md) in results:
         if status == "OK" and md:
             eligible_tokens.append(int(t_id))
             eligible_symbols.append(str(sym))
@@ -546,43 +2020,74 @@ async def _persist_results(results: List[Tuple[int, str, str, float, Optional[di
 
     return eligible_tokens, eligible_symbols
 
+
+# -----------------------------
+# Creds loader
+# -----------------------------
+async def _load_dhan_creds() -> Tuple[str, str]:
+    """
+    Priority:
+      1) Redis: nexus:config:api_key, nexus:auth:access_token (or nexus:config:api_secret fallback)
+      2) Env fallback: DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
+    """
+    client_id, api_secret = await TradeControl.get_config()
+    access_token = (await TradeControl.get_access_token()) or api_secret
+
+    if client_id and access_token:
+        return client_id, access_token
+
+    # Env fallback (useful for first-time setup / local testing)
+    env_client = (os.getenv("DHAN_CLIENT_ID") or os.getenv("DHAN_API_KEY") or "").strip()
+    env_token = (os.getenv("DHAN_ACCESS_TOKEN") or os.getenv("DHAN_API_SECRET") or "").strip()
+
+    if env_client and env_token:
+        return env_client, env_token
+
+    return "", ""
+
+
 # -----------------------------
 # Main sync
 # -----------------------------
 async def run_sync() -> None:
     logger.info("Starting DHAN Async Market Data Sync (daily candles + SMA filter)...")
     logger.info(
-        "Tuning: MIN_VOL_SMA=%s | CONCURRENCY=%s | MIN_REQ_INTERVAL_SEC=%.2f | LOOKBACK=%s | KEEP_OLD_ON_ERROR=%s",
-        MIN_VOL_SMA, MAX_CONCURRENCY, MIN_REQ_INTERVAL_SEC, HIST_LOOKBACK_DAYS, KEEP_OLD_ON_ERROR
+        f"Tuning: MIN_VOL_SMA={MIN_VOL_SMA} | CONCURRENCY={MAX_CONCURRENCY} | "
+        f"MIN_REQ_INTERVAL_SEC={MIN_REQ_INTERVAL_SEC:.2f} | LOOKBACK={HIST_LOOKBACK_DAYS} | "
+        f"KEEP_OLD_ON_ERROR={KEEP_OLD_ON_ERROR}"
     )
 
-    # Read creds from Redis
-    try:
-        client_id, api_secret = await TradeControl.get_config()
-        access_token = (await TradeControl.get_access_token()) or api_secret
-    except Exception as e:
-        logger.error("❌ Redis read failed (config/token). If using self-signed Redis TLS, set REDIS_INSECURE_TLS=1")
-        logger.error(f"Exception: {e}")
+    if not _has_redis_url():
+        # This is the exact issue you saw on Windows.
+        logger.error("❌ REDIS_URL not found (this script writes to Redis).")
+        logger.error("If running on Heroku dyno: REDIS_URL should exist automatically.")
+        logger.error("If running locally: set REDIS_URL (copy from: heroku config:get REDIS_URL -a <app>)")
         return
-
-    if not client_id or not access_token:
-        logger.error("Sync aborted: DHAN client_id or access_token missing in Redis.")
-        logger.error("Expected: nexus:config:api_key (client_id) and nexus:auth:access_token OR nexus:config:api_secret (access_token).")
-        return
+    else:
+        # show safe redacted info
+        url = os.getenv("REDIS_TLS_URL") or os.getenv("REDIS_URL") or os.getenv("REDISCLOUD_URL") or ""
+        logger.info(f"Redis URL detected: {_redact_redis_url(url)}")
 
     if not STOCK_INDEX_MAPPING or len(STOCK_INDEX_MAPPING) < 10:
         logger.error("STOCK_INDEX_MAPPING looks empty/truncated. Paste your full mapping into this file.")
         return
 
+    client_id, access_token = await _load_dhan_creds()
+    if not client_id or not access_token:
+        logger.error("Sync aborted: DHAN client_id or access_token missing.")
+        logger.error("Expected in Redis: nexus:config:api_key (client_id) and nexus:auth:access_token OR nexus:config:api_secret (access_token).")
+        logger.error("OR set env: DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN")
+        return
+
     try:
         # 1) Build securityId mapping for our universe
-        sym_to_sid = await _download_symbol_to_security_id_map(client_id, access_token)
+        sym_to_sid = await _download_symbol_to_security_id_map(access_token)
 
         target: List[Tuple[int, str]] = []
         for sym in STOCK_INDEX_MAPPING.keys():
-            sid = sym_to_sid.get(str(sym).upper())
+            sid = sym_to_sid.get(sym.upper())
             if sid:
-                target.append((int(sid), str(sym).upper()))
+                target.append((int(sid), sym.upper()))
 
         if SYNC_LIMIT_SYMBOLS and SYNC_LIMIT_SYMBOLS > 0:
             target = target[:SYNC_LIMIT_SYMBOLS]
@@ -600,12 +2105,15 @@ async def run_sync() -> None:
 
         # 2) Parallel daily historical fetch (with live progress)
         tasks = [
-            asyncio.create_task(_fetch_one(client_id, access_token, str(sec_id), sym, sem))
+            asyncio.create_task(_fetch_one(access_token, str(sec_id), sym, sem))
             for (sec_id, sym) in target
         ]
 
         results: List[Tuple[int, str, str, float, Optional[dict]]] = []
-        done = kept = filtered = failed = 0
+        done = 0
+        kept = 0
+        filtered = 0
+        failed = 0
 
         for fut in asyncio.as_completed(tasks):
             res = await fut
@@ -628,11 +2136,11 @@ async def run_sync() -> None:
         await TradeControl.save_subscribe_universe(eligible_tokens, eligible_symbols)
         await TradeControl.set_last_sync()
 
-        # 4) Final summary
+        # 4) Summary
         logger.info(f"SUCCESS: eligible={len(eligible_tokens)} (SMA >= {MIN_VOL_SMA}) | filtered={filtered} | errors={failed}")
         logger.info(f"Universe tokens saved to Redis: nexus:universe:tokens (count={len(eligible_tokens)})")
 
-        # 5) Optional: top by SMA
+        # 5) Optional top by SMA
         if os.getenv("SYNC_PRINT_TOP", "1") == "1":
             ok_rows = [(sym, sma) for (_tid, sym, status, sma, _md) in results if status == "OK"]
             ok_rows.sort(key=lambda x: x[1], reverse=True)
@@ -645,5 +2153,81 @@ async def run_sync() -> None:
     except Exception as e:
         logger.error(f"Critical sync failure: {e}", exc_info=True)
 
+
+def _apply_cli_overrides() -> None:
+    """
+    Allows running locally without exporting env vars.
+    Example:
+      python sync_market_data.py --redis-url "<from heroku config:get REDIS_URL -a app>"
+    """
+    global MIN_VOL_SMA, MAX_CONCURRENCY, MIN_REQ_INTERVAL_SEC, REQ_SLEEP, HIST_LOOKBACK_DAYS
+    global PROGRESS_EVERY, SYNC_LIMIT_SYMBOLS, KEEP_OLD_ON_ERROR, MAX_RETRIES, BACKOFF_BASE, BACKOFF_MAX
+    global DHAN_BASE
+
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--dotenv", default=".env", help="Path to .env file (default: .env)")
+    ap.add_argument("--redis-url", default="", help="Override REDIS_URL (useful for local runs)")
+    ap.add_argument("--redis-tls-url", default="", help="Override REDIS_TLS_URL (useful for local runs)")
+    ap.add_argument("--dhan-client-id", default="", help="Override DHAN client id (env fallback)")
+    ap.add_argument("--dhan-access-token", default="", help="Override DHAN access token (env fallback)")
+
+    ap.add_argument("--min-vol-sma", type=int, default=None)
+    ap.add_argument("--concurrency", type=int, default=None)
+    ap.add_argument("--min-req-interval", type=float, default=None)
+    ap.add_argument("--req-sleep", type=float, default=None)
+    ap.add_argument("--lookback", type=int, default=None)
+    ap.add_argument("--progress-every", type=int, default=None)
+    ap.add_argument("--limit-symbols", type=int, default=None)
+    ap.add_argument("--keep-old-on-error", type=int, default=None, help="1=keep old on API errors, 0=delete")
+    ap.add_argument("--max-retries", type=int, default=None)
+    ap.add_argument("--backoff-base", type=float, default=None)
+    ap.add_argument("--backoff-max", type=float, default=None)
+    ap.add_argument("--dhan-base", default=None)
+
+    args = ap.parse_args()
+
+    _load_dotenv_simple(args.dotenv)
+
+    if args.redis_tls_url:
+        os.environ["REDIS_TLS_URL"] = args.redis_tls_url.strip()
+    if args.redis_url:
+        os.environ["REDIS_URL"] = args.redis_url.strip()
+
+    if args.dhan_client_id:
+        os.environ["DHAN_CLIENT_ID"] = args.dhan_client_id.strip()
+    if args.dhan_access_token:
+        os.environ["DHAN_ACCESS_TOKEN"] = args.dhan_access_token.strip()
+
+    if args.min_vol_sma is not None:
+        MIN_VOL_SMA = int(args.min_vol_sma)
+    if args.concurrency is not None:
+        MAX_CONCURRENCY = int(args.concurrency)
+    if args.min_req_interval is not None:
+        MIN_REQ_INTERVAL_SEC = float(args.min_req_interval)
+    if args.req_sleep is not None:
+        REQ_SLEEP = float(args.req_sleep)
+    if args.lookback is not None:
+        HIST_LOOKBACK_DAYS = int(args.lookback)
+    if args.progress_every is not None:
+        PROGRESS_EVERY = int(args.progress_every)
+    if args.limit_symbols is not None:
+        SYNC_LIMIT_SYMBOLS = int(args.limit_symbols)
+    if args.keep_old_on_error is not None:
+        KEEP_OLD_ON_ERROR = bool(int(args.keep_old_on_error))
+    if args.max_retries is not None:
+        MAX_RETRIES = int(args.max_retries)
+    if args.backoff_base is not None:
+        BACKOFF_BASE = float(args.backoff_base)
+    if args.backoff_max is not None:
+        BACKOFF_MAX = float(args.backoff_max)
+    if args.dhan_base:
+        DHAN_BASE = str(args.dhan_base).strip()
+
+    # Rebuild rate limiter if MIN_REQ_INTERVAL_SEC changed
+    global _RATE
+    _RATE = _GlobalRateLimiter(MIN_REQ_INTERVAL_SEC)
+
+
 if __name__ == "__main__":
+    _apply_cli_overrides()
     asyncio.run(run_sync())
