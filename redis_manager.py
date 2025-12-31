@@ -47,8 +47,7 @@ def _redis_url() -> str:
     )
     
     # HEROKU SSL PATCH: 
-    # If using rediss://, ensure the URL contains ssl_cert_reqs=none 
-    # to prevent [SSL: CERTIFICATE_VERIFY_FAILED]
+    # Force the URL to use ssl_cert_reqs=none to bypass self-signed cert issues
     if url.startswith("rediss://"):
         if "ssl_cert_reqs" not in url:
             separator = "&" if "?" in url else "?"
@@ -81,6 +80,7 @@ async def get_redis() -> redis.Redis:
 
         url = _redis_url()
         if not url:
+            logger.error("❌ Redis URL not found in environment variables.")
             raise RuntimeError("Redis URL not set. Set REDIS_TLS_URL or REDIS_URL.")
 
         kwargs = dict(
@@ -91,7 +91,7 @@ async def get_redis() -> redis.Redis:
             health_check_interval=30,
         )
 
-        # Double-check TLS flags for redis-py
+        # Explicitly handle SSL flags for the connection pool
         if url.startswith("rediss://"):
             kwargs.update({
                 "ssl_cert_reqs": None,
@@ -179,20 +179,30 @@ return 1
 
 class TradeControl:
     # -----------------------------
-    # CONFIG (kept for dashboard compatibility)
+    # CONFIG 
     # api_key    -> DHAN_CLIENT_ID
     # api_secret -> DHAN_ACCESS_TOKEN
     # -----------------------------
     @staticmethod
     async def save_config(api_key: str, api_secret: str) -> bool:
+        """
+        Saves client_id and access_token. 
+        Improved to handle very long Dhan tokens.
+        """
         try:
             r = await get_redis()
-            await r.set("nexus:config:api_key", str(api_key or ""))
-            await r.set("nexus:config:api_secret", str(api_secret or ""))
-            logger.info("Config saved successfully to Redis.")
+            # Clean inputs to ensure no trailing whitespaces causing save failures
+            k = str(api_key or "").strip()
+            s = str(api_secret or "").strip()
+            
+            # Using set() without extra arguments for maximum stability
+            await r.set("nexus:config:api_key", k)
+            await r.set("nexus:config:api_secret", s)
+            
+            logger.info(f"✅ Dhan Config Saved. Key length: {len(k)}, Secret length: {len(s)}")
             return True
         except Exception as e:
-            logger.error(f"Failed to save api config: {e}")
+            logger.error(f"❌ Critical failure saving Dhan config: {e}")
             return False
 
     @staticmethod
@@ -201,14 +211,9 @@ class TradeControl:
             r = await get_redis()
             k = await r.get("nexus:config:api_key")
             s = await r.get("nexus:config:api_secret")
-            
-            # Use empty string if None, but keep the values if they exist
-            k_val = str(k) if k is not None else ""
-            s_val = str(s) if s is not None else ""
-            
-            return k_val, s_val
+            return str(k or ""), str(s or "")
         except Exception as e:
-            logger.error(f"Failed to get api config from Redis: {e}")
+            logger.error(f"❌ Failed to get api config: {e}")
             return "", ""
 
     @staticmethod
@@ -223,7 +228,7 @@ class TradeControl:
     async def save_access_token(token: str) -> bool:
         try:
             r = await get_redis()
-            await r.set("nexus:auth:access_token", str(token or ""))
+            await r.set("nexus:auth:access_token", str(token or "").strip())
             await r.set("nexus:auth:updated_at", datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
             return True
         except Exception as e:
@@ -234,12 +239,15 @@ class TradeControl:
     async def get_access_token() -> str:
         try:
             r = await get_redis()
-            val = await r.get("nexus:auth:access_token")
-            return str(val) if val is not None else ""
+            token = await r.get("nexus:auth:access_token")
+            return str(token or "")
         except Exception as e:
             logger.error(f"Failed to get access token: {e}")
             return ""
 
+    # -----------------------------
+    # MARKET CACHE
+    # -----------------------------
     @staticmethod
     async def save_market_data(token: str, market_data: dict) -> bool:
         try:
@@ -306,11 +314,14 @@ class TradeControl:
         try:
             r = await get_redis()
             val = await r.get("nexus:sync:last")
-            return str(val) if val is not None else ""
+            return str(val or "")
         except Exception as e:
             logger.error(f"Failed to get last sync: {e}")
             return ""
 
+    # -----------------------------
+    # STRATEGY SETTINGS
+    # -----------------------------
     @staticmethod
     async def save_strategy_settings(side: str, cfg: dict) -> bool:
         try:
@@ -333,6 +344,9 @@ class TradeControl:
             logger.error(f"Failed to get strategy settings {side}: {e}")
             return {}
 
+    # -----------------------------
+    # SUBSCRIBE UNIVERSE
+    # -----------------------------
     @staticmethod
     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:
         try:
@@ -359,6 +373,9 @@ class TradeControl:
             logger.error(f"Failed to get subscribe universe tokens: {e}")
             return []
 
+    # -----------------------------
+    # ATOMIC LIMITS
+    # -----------------------------
     @staticmethod
     async def reserve_side_trade(side: str, limit: int) -> bool:
         try:
