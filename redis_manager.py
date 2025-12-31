@@ -1,35 +1,32 @@
-
+# -*- coding: utf-8 -*-
 """
-Nexus Redis Manager (FULL FIXED)
+Nexus Redis Manager (Dhan-ready, architecture unchanged)
 
-Fixes included (as discussed in this thread):
-✅ Works with redis.asyncio (redis-py) correctly (NO eval(keys=..., args=...) bug)
+✅ Works with redis.asyncio (redis-py) correctly
 ✅ Atomic Lua-based counters:
-   - per-side daily trade limit (reserve_side_trade / rollback_side_trade)
-   - per-symbol daily max trades (reserve_symbol_trade / rollback_symbol_trade)
-   - open-position lock per symbol (prevents 2nd trade before 1st close)
+   - per-side daily trade limit
+   - per-symbol daily max trades
+   - open-position lock per symbol
 ✅ Daily keys (IST) so limits reset automatically each day
-✅ Compatible with existing code:
-   - save/get config (api key/secret)
-   - save/get access token
-   - market cache save/get/delete/all
-   - subscribe universe save/get
-   - last sync set/get
-✅ Strong logging + safe fallbacks
+✅ Compatible with your app (no breaking changes)
 
-IMPORTANT:
-- Requires requirements: redis, hiredis (already in your requirements.txt)
-- Uses decode_responses=True so Lua results are strings.
+IMPORTANT DHAN NOTE:
+- In Dhan version of app, "token" everywhere means DHAN security_id.
+  Example:
+    nexus:market:{token}  => nexus:market:{security_id}
 
-Drop-in replace your existing redis_manager.py with this file.
+Frontend mapping (kept as-is to avoid UI changes):
+- save_config(api_key, api_secret) stores:
+    api_key    -> DHAN_CLIENT_ID
+    api_secret -> DHAN_ACCESS_TOKEN
 """
 
 import os
 import json
-import ssl
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, List, Tuple
+import asyncio
+from datetime import datetime
+from typing import Dict, Optional, List, Tuple
 
 import pytz
 import redis.asyncio as redis
@@ -37,20 +34,14 @@ import redis.asyncio as redis
 logger = logging.getLogger("Redis_Manager")
 IST = pytz.timezone("Asia/Kolkata")
 
-# Global singleton client (lazy init)
 _r: Optional[redis.Redis] = None
+_r_init_lock = asyncio.Lock()
 
 
 # -----------------------------
 # Helpers
 # -----------------------------
 def _redis_url() -> str:
-    """
-    Prefer TLS url on Heroku. Heroku provides:
-      - REDIS_TLS_URL (rediss://...): TLS
-      - REDIS_URL (redis://...): non-TLS
-      - REDISCLOUD_URL: sometimes
-    """
     return (
         os.getenv("REDIS_TLS_URL")
         or os.getenv("REDIS_URL")
@@ -60,12 +51,10 @@ def _redis_url() -> str:
 
 
 def _ist_day_key() -> str:
-    """YYYYMMDD in IST, used for per-day limits."""
     return datetime.now(IST).strftime("%Y%m%d")
 
 
 def _seconds_until_ist_eod() -> int:
-    """Expire keys at IST end-of-day (safer than 24h)."""
     now = datetime.now(IST)
     eod = now.replace(hour=23, minute=59, second=59, microsecond=0)
     return max(60, int((eod - now).total_seconds()))
@@ -73,53 +62,44 @@ def _seconds_until_ist_eod() -> int:
 
 async def get_redis() -> redis.Redis:
     """
-    Lazy init Redis client with Heroku-friendly TLS settings.
-
-    ✅ FIX:
-    - When using from_url with 'rediss://', redis-py already uses SSL.
-    - Do NOT pass ssl=True.
-    - For Heroku self-signed certs, set ssl_cert_reqs=None.
+    Singleton async Redis client with safe concurrent init.
     """
     global _r
     if _r is not None:
         return _r
 
-    url = _redis_url()
-    if not url:
-        raise RuntimeError(
-            "Redis URL not set. Set REDIS_TLS_URL or REDIS_URL in Heroku config vars."
+    async with _r_init_lock:
+        if _r is not None:
+            return _r
+
+        url = _redis_url()
+        if not url:
+            raise RuntimeError("Redis URL not set. Set REDIS_TLS_URL or REDIS_URL.")
+
+        kwargs = dict(
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=10,
+            retry_on_timeout=True,
+            health_check_interval=30,
         )
 
-    kwargs = dict(
-        decode_responses=True,
-        socket_timeout=10,
-        socket_connect_timeout=10,
-        retry_on_timeout=True,
-        health_check_interval=30,
-    )
+        # TLS redis
+        if url.startswith("rediss://"):
+            # redis-py accepts ssl_cert_reqs=None for permissive TLS validation
+            kwargs.update(ssl_cert_reqs=None)
 
-    if url.startswith("rediss://"):
-        kwargs.update(ssl_cert_reqs=None)
+        client = redis.from_url(url, **kwargs)
+        await client.ping()
 
-    try:
-        _r = redis.from_url(url, **kwargs)
-        await _r.ping()
+        _r = client
         logger.info("✅ Redis connected successfully.")
-    except Exception as e:
-        logger.error(f"❌ Redis connection failed: {e}")
-        _r = None
-        raise
-
-    return _r
+        return _r
 
 
 # -----------------------------
-# LUA scripts (redis-py signature)
-# NOTE: redis.asyncio.eval signature is:
-#   await r.eval(script, numkeys, key1, key2, ..., arg1, arg2, ...)
+# LUA scripts
 # -----------------------------
-
-# Reserve 1 side trade if under limit (atomic)
 _LUA_RESERVE_SIDE = """
 local key = KEYS[1]
 local limit = tonumber(ARGV[1])
@@ -131,7 +111,6 @@ redis.call('INCR', key)
 return 1
 """
 
-# Rollback side trade count (never below 0)
 _LUA_ROLLBACK_SIDE = """
 local key = KEYS[1]
 local cur = tonumber(redis.call('GET', key) or '0')
@@ -143,7 +122,6 @@ redis.call('DECR', key)
 return 1
 """
 
-# Reserve symbol trade + set open lock in one atomic script
 _LUA_RESERVE_SYMBOL = """
 local count_key = KEYS[1]
 local lock_key  = KEYS[2]
@@ -151,7 +129,6 @@ local lock_key  = KEYS[2]
 local max_trades = tonumber(ARGV[1])
 local lock_ttl   = tonumber(ARGV[2])
 
--- if already open => block
 if redis.call('EXISTS', lock_key) == 1 then
   return {0, "LOCKED"}
 end
@@ -161,13 +138,10 @@ if cur >= max_trades then
   return {0, "MAX_TRADES"}
 end
 
--- increment daily count
 redis.call('INCR', count_key)
 
--- set open lock NX EX
 local ok = redis.call('SET', lock_key, '1', 'NX', 'EX', lock_ttl)
 if not ok then
-  -- rollback count if lock failed
   redis.call('DECR', count_key)
   return {0, "LOCKED"}
 end
@@ -175,7 +149,6 @@ end
 return {1, "OK"}
 """
 
-# Rollback symbol reserve: delete lock + decrement count (never below 0)
 _LUA_ROLLBACK_SYMBOL = """
 local count_key = KEYS[1]
 local lock_key  = KEYS[2]
@@ -194,7 +167,9 @@ return 1
 
 class TradeControl:
     # -----------------------------
-    # API KEY / SECRET
+    # CONFIG (kept for dashboard compatibility)
+    # api_key    -> DHAN_CLIENT_ID
+    # api_secret -> DHAN_ACCESS_TOKEN
     # -----------------------------
     @staticmethod
     async def save_config(api_key: str, api_secret: str) -> bool:
@@ -218,8 +193,17 @@ class TradeControl:
             logger.error(f"Failed to get api config: {e}")
             return "", ""
 
+    # Optional aliases (no UI change needed)
+    @staticmethod
+    async def save_dhan_config(client_id: str, access_token: str) -> bool:
+        return await TradeControl.save_config(client_id, access_token)
+
+    @staticmethod
+    async def get_dhan_config() -> Tuple[str, str]:
+        return await TradeControl.get_config()
+
     # -----------------------------
-    # ACCESS TOKEN
+    # LEGACY ACCESS TOKEN (Kite-era)
     # -----------------------------
     @staticmethod
     async def save_access_token(token: str) -> bool:
@@ -242,8 +226,10 @@ class TradeControl:
             return ""
 
     # -----------------------------
-    # MARKET CACHE (SMA/PDH/PDL/PREV_CLOSE)
+    # MARKET CACHE
     # key: nexus:market:{token}
+    # DHAN: token == security_id
+    # stores: symbol, sma, pdh, pdl, prev_close, etc.
     # -----------------------------
     @staticmethod
     async def save_market_data(token: str, market_data: dict) -> bool:
@@ -281,7 +267,7 @@ class TradeControl:
     @staticmethod
     async def get_all_market_data() -> Dict[str, dict]:
         """
-        Returns dict: { token_str: {...market_data...}, ... }
+        Returns dict keyed by token/security_id (string form).
         """
         try:
             r = await get_redis()
@@ -348,6 +334,7 @@ class TradeControl:
 
     # -----------------------------
     # SUBSCRIBE UNIVERSE
+    # DHAN: tokens are security_ids
     # -----------------------------
     @staticmethod
     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:
@@ -376,14 +363,12 @@ class TradeControl:
             return []
 
     # -----------------------------
-    # ✅ NEW: ATOMIC SIDE TRADE LIMITS (daily)
+    # ATOMIC SIDE TRADE LIMITS (daily)
+    # NOTE: This is a DAILY counter, not "open positions".
+    # So: reserve on entry; rollback only on entry failure.
     # -----------------------------
     @staticmethod
     async def reserve_side_trade(side: str, limit: int) -> bool:
-        """
-        Atomically reserves 1 trade for a side if below limit.
-        Key is per-day (IST), so it resets daily.
-        """
         try:
             r = await get_redis()
             day = _ist_day_key()
@@ -397,9 +382,6 @@ class TradeControl:
 
     @staticmethod
     async def rollback_side_trade(side: str) -> bool:
-        """
-        Rollback when order placement fails after reserving side slot.
-        """
         try:
             r = await get_redis()
             day = _ist_day_key()
@@ -413,9 +395,6 @@ class TradeControl:
 
     @staticmethod
     async def reset_trade_counts() -> bool:
-        """
-        Legacy helper: deletes today's side counters.
-        """
         try:
             r = await get_redis()
             day = _ist_day_key()
@@ -427,19 +406,19 @@ class TradeControl:
             return False
 
     # -----------------------------
-    # ✅ NEW: ATOMIC PER-SYMBOL LIMIT + OPEN LOCK
+    # ATOMIC PER-SYMBOL LIMIT (daily count) + OPEN LOCK (single open position)
+    # reserve_symbol_trade():
+    #   - increments DAILY count (count_key)
+    #   - acquires OPEN lock (lock_key)
+    # On normal close: call release_symbol_lock() ONLY (do not decrement daily count)
+    # On entry failure: call rollback_symbol_trade() to undo both
     # -----------------------------
     @staticmethod
-    async def reserve_symbol_trade(symbol: str, max_trades: int = 2, lock_ttl_sec: int = 1800):
-        """
-        Atomic reservation:
-          - blocks if symbol is already OPEN (lock exists)
-          - blocks if daily count >= max_trades
-          - else increments daily count and sets open lock (NX EX)
-
-        Returns: (ok: bool, reason: str)
-          reason in: OK, LOCKED, MAX_TRADES, ERROR
-        """
+    async def reserve_symbol_trade(
+        symbol: str,
+        max_trades: int = 2,
+        lock_ttl_sec: int = 1800
+    ) -> Tuple[bool, str]:
         symbol = str(symbol or "").strip().upper()
         if not symbol:
             return False, "ERROR"
@@ -459,10 +438,8 @@ class TradeControl:
                 str(int(lock_ttl_sec)),
             )
 
-            # With decode_responses=True, res is list like ['1','OK'] or ['0','LOCKED']
             ok = int(res[0]) == 1
             reason = str(res[1])
-
             await r.expire(count_key, _seconds_until_ist_eod())
             return ok, reason
 
@@ -472,10 +449,6 @@ class TradeControl:
 
     @staticmethod
     async def rollback_symbol_trade(symbol: str) -> bool:
-        """
-        Rollback symbol reservation if order placement fails after reserve.
-        Removes open lock and decrements daily count safely.
-        """
         symbol = str(symbol or "").strip().upper()
         if not symbol:
             return False
@@ -494,9 +467,6 @@ class TradeControl:
 
     @staticmethod
     async def release_symbol_lock(symbol: str) -> bool:
-        """
-        Called on trade close to allow 2nd trade.
-        """
         symbol = str(symbol or "").strip().upper()
         if not symbol:
             return False
@@ -510,9 +480,6 @@ class TradeControl:
 
     @staticmethod
     async def get_symbol_trade_count(symbol: str) -> int:
-        """
-        How many trades taken today for this symbol.
-        """
         symbol = str(symbol or "").strip().upper()
         if not symbol:
             return 0
@@ -526,13 +493,8 @@ class TradeControl:
             return 0
 
     # -----------------------------
-    # LEGACY: can_trade (kept for compatibility)
+    # LEGACY: can_trade (kept)
     # -----------------------------
     @staticmethod
     async def can_trade(side: str, limit: int) -> bool:
-        """
-        Backwards-compatible. Uses the new atomic side reservation.
-        NOTE: This reserves immediately.
-        If order fails, you must call rollback_side_trade(side).
-        """
         return await TradeControl.reserve_side_trade(side, limit)

@@ -63,7 +63,7 @@
     input:checked + .slider:before { transform: translateX(16px); }
 
     .scanner-card {
-      border-left: 4px solid #3b82f6;
+      border-left-width: 4px;
       background: linear-gradient(90deg, rgba(59, 130, 246, 0.05) 0%, rgba(0,0,0,0) 100%);
     }
 
@@ -82,13 +82,9 @@
       background: rgba(30, 41, 59, 0.8);
       border-color: rgba(59, 130, 246, 0.7);
     }
-    .icon-danger:hover {
-      border-color: rgba(244, 63, 94, 0.7);
-    }
-    .tiny {
-      font-size: 9px;
-      letter-spacing: 0.12em;
-    }
+    .icon-danger:hover { border-color: rgba(244, 63, 94, 0.7); }
+
+    .tiny { font-size: 9px; letter-spacing: 0.12em; }
     .muted { color: #64748b; }
     .mono { font-family: 'JetBrains Mono', monospace; }
 
@@ -136,6 +132,10 @@
       <div class="flex justify-between items-center">
         <span class="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Feed Status</span>
         <span id="feed-status" class="text-[10px] font-mono text-emerald-500 font-bold uppercase">Connected</span>
+      </div>
+      <div class="mt-2 flex justify-between items-center">
+        <span class="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Order Updates</span>
+        <span id="ou-status" class="text-[10px] font-mono text-emerald-500 font-bold uppercase">Connected</span>
       </div>
     </div>
   </aside>
@@ -249,27 +249,38 @@
     </div>
   </div>
 
-  <!-- API CONFIG MODAL -->
+  <!-- API CONFIG MODAL (DHAN) -->
   <div id="api-modal" class="fixed inset-0 bg-black/95 flex items-center justify-center z-50 hidden p-4 backdrop-blur-xl">
     <div class="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-sm p-10 shadow-2xl text-center">
-      <h3 class="text-lg font-bold text-white mb-2 uppercase">Auth Gateway</h3>
-      <p class="text-[10px] text-slate-500 mb-8 uppercase tracking-widest">KiteConnect HFT Integration</p>
+      <h3 class="text-lg font-bold text-white mb-2 uppercase">Broker Credentials</h3>
+      <p class="text-[10px] text-slate-500 mb-8 uppercase tracking-widest">DhanHQ Integration</p>
 
-      <div class="space-y-4 mb-8">
-        <input id="api-key-input" placeholder="API KEY" class="matrix-input !h-11 px-4 !bg-black">
-        <input id="api-secret-input" type="password" placeholder="API SECRET" class="matrix-input !h-11 px-4 !bg-black">
+      <div class="space-y-4 mb-6">
+        <input id="dhan-client-id" placeholder="DHAN CLIENT ID" class="matrix-input !h-11 px-4 !bg-black">
+        <input id="dhan-access-token" type="password" placeholder="DHAN ACCESS TOKEN" class="matrix-input !h-11 px-4 !bg-black">
       </div>
 
-      <button onclick="saveApi()" class="w-full bg-blue-600 py-3 rounded-xl font-black text-xs uppercase mb-3 transition-all">Save Credentials</button>
-      <button onclick="window.location.href='/login/'" class="w-full bg-emerald-600/10 border border-emerald-600/30 text-emerald-500 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-emerald-600/20">Authenticate Zerodha</button>
+      <button onclick="saveBrokerCreds()" class="w-full bg-blue-600 py-3 rounded-xl font-black text-xs uppercase mb-3 transition-all hover:bg-blue-500">Save Credentials</button>
+
+      <button onclick="window.open('https://dhanhq.co/docs/', '_blank')" class="w-full bg-emerald-600/10 border border-emerald-600/30 text-emerald-500 py-2.5 rounded-xl text-[10px] font-bold uppercase hover:bg-emerald-600/20">
+        How to get Dhan token?
+      </button>
 
       <button onclick="document.getElementById('api-modal').classList.add('hidden')" class="mt-6 text-[10px] text-slate-600 font-bold uppercase hover:text-white transition-colors">Dismiss</button>
     </div>
   </div>
 
   <script>
-    lucide.createIcons();
     let currentEngineSide = null;
+
+    // Tailwind CDN does NOT support dynamic class generation like `border-${color}-500`.
+    // So we use explicit styles for color.
+    const colorTheme = {
+      emerald: { dot: '#10b981', border: 'rgba(16,185,129,0.65)', text: '#34d399' },
+      blue:    { dot: '#3b82f6', border: 'rgba(59,130,246,0.65)',  text: '#60a5fa' },
+      rose:    { dot: '#fb7185', border: 'rgba(244,63,94,0.65)',   text: '#fb7185' },
+      orange:  { dot: '#fb923c', border: 'rgba(251,146,60,0.65)',  text: '#fdba74' }
+    };
 
     const engineMap = [
       { id: 'bull', name: 'Breakout (Bullish)', color: 'emerald' },
@@ -305,23 +316,25 @@
           </div>
         `);
       });
+      lucide.createIcons();
     }
 
     function initEngines() {
       const grid = document.getElementById('engine-grid');
       grid.innerHTML = '';
       engineMap.forEach(eng => {
+        const theme = colorTheme[eng.color] || colorTheme.blue;
         grid.insertAdjacentHTML('beforeend', `
-          <section class="glass-panel p-4 rounded-2xl border-t-2 border-${eng.color}-600">
+          <section class="glass-panel p-4 rounded-2xl" style="border-top: 2px solid ${theme.border};">
             <div class="flex justify-between items-center mb-4">
               <div class="flex items-center gap-2">
-                <div class="w-2 h-2 rounded-full bg-${eng.color}-500 shadow-[0_0_5px_rgba(0,0,0,0.5)]"></div>
+                <div class="w-2 h-2 rounded-full" style="background:${theme.dot}; box-shadow: 0 0 10px rgba(0,0,0,0.4)"></div>
                 <span class="text-[10px] font-black uppercase text-slate-300 tracking-tight">${eng.name}</span>
               </div>
               <div class="flex items-center gap-3">
                 <span id="${eng.id}-pnl-side" class="text-xs font-black px-2 tabular-nums">0.00</span>
                 <button class="icon-btn icon-danger" title="Exit All" onclick="squareOffAll('${eng.id}')">
-                  <i data-lucide="log-out" class="w-4 h-4 text-rose-400"></i>
+                  <i data-lucide="log-out" class="w-4 h-4" style="color:#fb7185"></i>
                 </button>
                 <label class="switch">
                   <input type="checkbox" id="toggle-${eng.id}" onchange="handleToggle('${eng.id}')">
@@ -362,8 +375,17 @@
       if (el) { el.className = `badge ${cls}`; el.innerText = text; }
     }
 
+    function setUiSync(ok, text) {
+      const el = document.getElementById('ui-sync-badge');
+      if (!el) return;
+      el.className = `badge ${ok ? 'badge-ok' : 'badge-bad'}`;
+      el.innerText = text || (ok ? 'Parallel ON' : 'Sync OFF');
+    }
+
     function updateDot(id, active) {
-      document.getElementById(id).className = `w-2 h-2 rounded-full ${active ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-red-600'}`;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = `w-2 h-2 rounded-full ${active ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-red-600'}`;
     }
 
     function addLog(msg) {
@@ -383,12 +405,16 @@
       try {
         const client = axios.create({ timeout: HTTP_TIMEOUT_MS });
         const [statsRes, ordersRes, scanRes] = await Promise.all([
-          client.get('/api/stats'), client.get('/api/orders'), client.get('/api/scanner')
+          client.get('/api/stats'),
+          client.get('/api/orders'),
+          client.get('/api/scanner')
         ]);
 
         if (mySeq !== syncSeq) return;
+
         const ms = Math.round(performance.now() - started);
         setBadge('sync-health', ms < 1200 ? 'badge-ok' : 'badge-warn', `SYNC ${ms}ms`);
+        setUiSync(true, `Parallel ON`);
 
         const stats = statsRes.data || {};
         const total = stats.pnl?.total || 0;
@@ -404,27 +430,42 @@
         feed.innerText = connected ? 'Connected' : 'Disconnected';
         feed.className = `text-[10px] font-mono font-bold uppercase ${connected ? 'text-emerald-500' : 'text-rose-400'}`;
 
+        const ou = document.getElementById('ou-status');
+        const ouOn = !!stats.order_updates_connected;
+        ou.innerText = ouOn ? 'Connected' : 'Disconnected';
+        ou.className = `text-[10px] font-mono font-bold uppercase ${ouOn ? 'text-emerald-500' : 'text-rose-400'}`;
+
         engineMap.forEach(e => {
           const on = stats.engine_status?.[e.id] === "1";
           const pnl = stats.pnl?.[e.id] || 0;
-          document.getElementById(`toggle-${e.id}`).checked = !!on;
+          const toggle = document.getElementById(`toggle-${e.id}`);
+          if (toggle) toggle.checked = !!on;
           const el = document.getElementById(`${e.id}-pnl-side`);
-          el.innerText = Number(pnl).toFixed(2);
-          el.className = `text-xs font-black px-2 tabular-nums ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'}`;
+          if (el) {
+            el.innerText = Number(pnl).toFixed(2);
+            el.className = `text-xs font-black px-2 tabular-nums ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'}`;
+          }
         });
 
         const orders = ordersRes.data || {};
         engineMap.forEach(e => {
           const tbody = document.getElementById(`${e.id}-tbody`);
-          const data = (orders[e.id] || []).filter(t => t.status === "OPEN");
+          if (!tbody) return;
+          const data = (orders[e.id] || []).filter(t => (t.status || "").toUpperCase() === "OPEN");
           if (data.length > 0) {
             tbody.innerHTML = data.map(t => `
               <tr class="hover:bg-blue-600/5 transition-colors">
-                <td class="px-3 py-2 font-bold text-white"><a href="${tvLink(t.symbol)}" target="_blank" class="underline decoration-slate-700 hover:decoration-blue-500">${t.symbol}</a></td>
-                <td class="px-3 py-2 text-center text-blue-400 font-mono">₹${Number(t.entry_price).toFixed(2)}</td>
-                <td class="px-3 py-2 text-center text-emerald-500 font-mono">₹${Number(t.target_price).toFixed(2)}</td>
+                <td class="px-3 py-2 font-bold text-white">
+                  <a href="${tvLink(t.symbol)}" target="_blank" class="underline decoration-slate-700 hover:decoration-blue-500">${t.symbol}</a>
+                </td>
+                <td class="px-3 py-2 text-center text-blue-400 font-mono">₹${Number(t.entry_price || 0).toFixed(2)}</td>
+                <td class="px-3 py-2 text-center text-emerald-500 font-mono">₹${Number(t.target_price || 0).toFixed(2)}</td>
                 <td class="px-3 py-2 text-right font-black tabular-nums ${Number(t.pnl||0) >= 0 ? 'text-emerald-400' : 'text-rose-500'}">₹${Number(t.pnl||0).toFixed(2)}</td>
-                <td class="px-3 py-2 text-right"><button class="icon-btn icon-danger" onclick="squareOffOne('${e.id}', '${t.symbol}')"><i data-lucide="x" class="w-4 h-4 text-rose-400"></i></button></td>
+                <td class="px-3 py-2 text-right">
+                  <button class="icon-btn icon-danger" onclick="squareOffOne('${e.id}', '${t.symbol}')">
+                    <i data-lucide="x" class="w-4 h-4" style="color:#fb7185"></i>
+                  </button>
+                </td>
               </tr>
             `).join('');
           } else {
@@ -434,25 +475,51 @@
 
         const scan = scanRes.data || {};
         const allSignals = [];
-        engineMap.forEach(e => (scan[e.id] || []).forEach(s => allSignals.push({ ...s, type: e.name, color: e.color, sideId: e.id })));
+        engineMap.forEach(e => (scan[e.id] || []).forEach(s => {
+          allSignals.push({ ...s, type: e.name, color: e.color, sideId: e.id });
+        }));
+
         document.getElementById('scan-count').innerText = `${allSignals.length} STOCKS`;
-        document.getElementById('unified-scanner').innerHTML = allSignals.length > 0 ? allSignals.map(s => `
-          <div class="p-3 rounded-xl scanner-card border-l-4 border-${s.color}-500">
-            <div class="flex justify-between items-start">
-              <a href="${tvLink(s.symbol)}" target="_blank" class="text-xs font-black text-white flex items-center gap-2 hover:text-blue-300">${s.symbol} <i data-lucide="external-link" class="w-3 h-3 text-slate-400"></i></a>
-              <span class="text-[7px] font-black uppercase text-blue-400 bg-blue-400/10 px-1 rounded-sm">${s.sideId.toUpperCase()}</span>
-            </div>
-            <div class="grid grid-cols-2 gap-2 mt-2">
-              <div class="text-[9px] text-slate-400 font-bold">Seen: <span class="text-slate-200 mono">${s.seen_time || '--'}</span></div>
-              <div class="text-[9px] text-slate-400 font-bold text-right">Trigger: <span class="text-blue-400 mono">₹${fmt2(s.trigger_px)}</span></div>
-            </div>
-            <div class="mt-2 text-[8px] text-slate-600 font-bold uppercase italic">${s.reason || 'Candidate Found'}</div>
-          </div>
-        `).join('') : '<div class="text-center py-20 text-slate-700 italic text-[10px]">Scanning ticks...</div>';
+        document.getElementById('unified-scanner').innerHTML = allSignals.length > 0
+          ? allSignals.map(s => {
+              const theme = colorTheme[s.color] || colorTheme.blue;
+              return `
+                <div class="p-3 rounded-xl scanner-card" style="border-left-color:${theme.border}">
+                  <div class="flex justify-between items-start">
+                    <a href="${tvLink(s.symbol)}" target="_blank" class="text-xs font-black text-white flex items-center gap-2 hover:text-blue-300">
+                      ${s.symbol} <i data-lucide="external-link" class="w-3 h-3 text-slate-400"></i>
+                    </a>
+                    <span class="text-[7px] font-black uppercase text-blue-400 bg-blue-400/10 px-1 rounded-sm">${String(s.sideId || '').toUpperCase()}</span>
+                  </div>
+                  <div class="grid grid-cols-2 gap-2 mt-2">
+                    <div class="text-[9px] text-slate-400 font-bold">Seen: <span class="text-slate-200 mono">${s.seen_time || '--'}</span></div>
+                    <div class="text-[9px] text-slate-400 font-bold text-right">Trigger: <span class="text-blue-400 mono">₹${fmt2(Number(s.trigger_px))}</span></div>
+                  </div>
+                  <div class="mt-2 text-[8px] text-slate-600 font-bold uppercase italic">${s.reason || 'Candidate Found'}</div>
+                </div>
+              `;
+            }).join('')
+          : '<div class="text-center py-20 text-slate-700 italic text-[10px]">Scanning ticks...</div>';
+
         lucide.createIcons();
+
       } catch (e) {
         setBadge('sync-health', 'badge-bad', 'SYNC FAIL');
-      } finally { syncInFlight = false; }
+        setUiSync(false, 'Sync OFF');
+
+        const feed = document.getElementById('feed-status');
+        feed.innerText = 'Disconnected';
+        feed.className = 'text-[10px] font-mono font-bold uppercase text-rose-400';
+
+        const ou = document.getElementById('ou-status');
+        ou.innerText = 'Disconnected';
+        ou.className = 'text-[10px] font-mono font-bold uppercase text-rose-400';
+
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`SYNC ERROR: ${msg}`);
+      } finally {
+        syncInFlight = false;
+      }
     }
 
     async function handleToggle(side) {
@@ -465,51 +532,82 @@
       try {
         await axios.post('/api/control', { action: 'square_off_one', side, symbol });
         addLog(`EXIT: ${symbol}`);
-      } catch (e) { addLog(`EXIT FAILED: ${symbol}`); }
+      } catch (e) {
+        addLog(`EXIT FAILED: ${symbol}`);
+      }
     }
 
     async function squareOffAll(side) {
       try {
         await axios.post('/api/control', { action: 'square_off_all', side });
         addLog(`EXIT ALL: ${side.toUpperCase()}`);
-      } catch (e) { addLog(`EXIT ALL FAILED: ${side}`); }
+      } catch (e) {
+        addLog(`EXIT ALL FAILED: ${side}`);
+      }
     }
 
-    // 🟢 FIXED: PERSISTENCE FETCH
+    // Fetch broker creds from backend (Redis)
     async function openApiModal() {
       try {
         const res = await axios.get('/api/config/auth');
-        document.getElementById('api-key-input').value = res.data.api_key || "";
-        document.getElementById('api-secret-input').value = res.data.api_secret || "";
+        const data = res.data || {};
+
+        // Support both formats
+        const clientId = data.client_id || data.api_key || "";
+        const accessToken = data.access_token || data.api_secret || "";
+
+        document.getElementById('dhan-client-id').value = clientId;
+        document.getElementById('dhan-access-token').value = accessToken;
+
         addLog("AUTH: Fetched credentials from Redis.");
-      } catch (e) { console.error("Modal Fetch Fail", e); }
+      } catch (e) {
+        addLog("AUTH: Fetch failed (check /api/config/auth).");
+      }
       document.getElementById('api-modal').classList.remove('hidden');
+      lucide.createIcons();
     }
 
-    async function saveApi() {
-      const api_key = document.getElementById('api-key-input').value;
-      const api_secret = document.getElementById('api-secret-input').value;
+    // Save broker creds to backend
+    async function saveBrokerCreds() {
+      const client_id = document.getElementById('dhan-client-id').value.trim();
+      const access_token = document.getElementById('dhan-access-token').value.trim();
+
       try {
-        const res = await axios.post('/api/control', { action: 'save_api', api_key, api_secret });
-        if (res.data.status === "success") {
+        // Backend in our main.py expects api_key/api_secret
+        const res = await axios.post('/api/control', {
+          action: 'save_api',
+          broker: 'dhan',
+          client_id,
+          access_token,
+          api_key: client_id,
+          api_secret: access_token
+        });
+
+        if ((res.data && res.data.status === "success") || res.status === 200) {
           addLog("AUTH: Saved to Redis.");
           document.getElementById('api-modal').classList.add('hidden');
+        } else {
+          addLog("AUTH ERROR: Save failed.");
         }
-      } catch (e) { addLog("AUTH ERROR: Save failed."); }
+      } catch (e) {
+        addLog("AUTH ERROR: Save failed.");
+      }
     }
 
     async function openSettings(side) {
       currentEngineSide = side;
       document.getElementById('modal-title').innerText = `${side.toUpperCase()} Logic Configuration`;
+
       const timeBox = document.getElementById('breakout-time-box');
       isBreakoutSide(side) ? timeBox.classList.remove('hidden') : timeBox.classList.add('hidden');
 
       const res = await axios.get(`/api/settings/engine/${side}`);
       const cfg = res.data || {};
+
       document.getElementById('inp-rr').value = cfg.risk_reward || '1:2';
       document.getElementById('inp-tsl').value = cfg.trailing_sl || '1:1.5';
-      document.getElementById('inp-max-trades').value = cfg.total_trades || 5;
-      document.getElementById('inp-risk').value = cfg.risk_trade_1 || 2000;
+      document.getElementById('inp-max-trades').value = cfg.total_trades ?? 5;
+      document.getElementById('inp-risk').value = cfg.risk_trade_1 ?? 2000;
 
       if (isBreakoutSide(side)) {
         document.getElementById('inp-start').value = cfg.trade_start || '09:15';
@@ -518,7 +616,8 @@
 
       const container = document.getElementById('volume-levels-container');
       container.innerHTML = '';
-      let matrix = cfg.volume_criteria?.length ? cfg.volume_criteria : defaultMatrix();
+      const matrix = (cfg.volume_criteria && cfg.volume_criteria.length) ? cfg.volume_criteria : defaultMatrix();
+
       matrix.forEach((row, i) => {
         container.insertAdjacentHTML('beforeend', `
           <div class="grid grid-cols-4 gap-3 bg-slate-900/50 p-2 rounded border border-slate-800">
@@ -529,11 +628,16 @@
           </div>
         `);
       });
+
       document.getElementById('settings-modal').classList.remove('hidden');
+      lucide.createIcons();
     }
 
     async function saveSettings() {
-      const vCr = document.querySelectorAll('.v-cr'), vSma = document.querySelectorAll('.v-sma'), vAvg = document.querySelectorAll('.v-avg');
+      const vCr = document.querySelectorAll('.v-cr');
+      const vSma = document.querySelectorAll('.v-sma');
+      const vAvg = document.querySelectorAll('.v-avg');
+
       const matrix = Array.from(vCr).map((el, i) => ({
         min_vol_price_cr: parseFloat(el.value) || 0,
         sma_multiplier: parseFloat(vSma[i].value) || 1.0,
@@ -547,21 +651,29 @@
         risk_trade_1: Number(document.getElementById('inp-risk').value),
         volume_criteria: matrix
       };
+
       if (isBreakoutSide(currentEngineSide)) {
         payload.trade_start = document.getElementById('inp-start').value;
         payload.trade_end = document.getElementById('inp-end').value;
       }
+
       await axios.post(`/api/settings/engine/${currentEngineSide}`, payload);
       addLog(`SAVED: ${currentEngineSide.toUpperCase()}`);
       document.getElementById('settings-modal').classList.add('hidden');
     }
 
-    function closeSettings() { document.getElementById('settings-modal').classList.add('hidden'); }
+    function closeSettings() {
+      document.getElementById('settings-modal').classList.add('hidden');
+    }
 
-    initEngines();
-    applyMatrixDefaults();
-    runSyncParallel();
-    setInterval(runSyncParallel, SYNC_INTERVAL_MS);
+    // Boot
+    window.addEventListener('DOMContentLoaded', () => {
+      initEngines();
+      applyMatrixDefaults();
+      runSyncParallel();
+      setInterval(runSyncParallel, SYNC_INTERVAL_MS);
+      lucide.createIcons();
+    });
   </script>
 </body>
 </html>

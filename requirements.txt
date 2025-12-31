@@ -1,4 +1,4 @@
-kiteconnect
+dhanhq
 fastapi
 uvicorn[standard]
 pytz
