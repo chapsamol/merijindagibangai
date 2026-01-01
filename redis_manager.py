@@ -22,7 +22,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 
 import pytz
 import redis.asyncio as redis
@@ -197,11 +197,6 @@ return 1
 class TradeControl:
     # -----------------------------
     # CONFIG
-    # api_key    -> DHAN_CLIENT_ID
-    # api_secret -> DHAN_ACCESS_TOKEN
-    #
-    # IMPORTANT:
-    # - save_config now also writes nexus:auth:access_token so main.py worker reads it.
     # -----------------------------
     @staticmethod
     async def save_config(api_key: str, api_secret: str) -> bool:
@@ -283,7 +278,6 @@ class TradeControl:
 
     # -----------------------------
     # MARKET CACHE
-    # Keys: nexus:market:{token}
     # -----------------------------
     @staticmethod
     async def save_market_data(token: str, market_data: dict) -> bool:
@@ -358,7 +352,6 @@ class TradeControl:
 
     # -----------------------------
     # STRATEGY SETTINGS
-    # Keys: nexus:settings:{side}
     # -----------------------------
     @staticmethod
     async def save_strategy_settings(side: str, cfg: dict) -> bool:
@@ -384,9 +377,6 @@ class TradeControl:
 
     # -----------------------------
     # SUBSCRIBE UNIVERSE
-    # Keys:
-    #   nexus:universe:tokens
-    #   nexus:universe:symbols
     # -----------------------------
     @staticmethod
     async def save_subscribe_universe(tokens: List[int], symbols: Optional[List[str]] = None) -> bool:
@@ -532,3 +522,138 @@ class TradeControl:
     @staticmethod
     async def can_trade(side: str, limit: int) -> bool:
         return await TradeControl.reserve_side_trade(side, limit)
+
+    # ============================================================
+    # ✅ ADDITIVE HELPERS (no breaking changes)
+    # ============================================================
+
+    # -----------------------------
+    # Engine enable + updated_at
+    # -----------------------------
+    @staticmethod
+    async def set_engine_enabled(side: str, enabled: bool) -> bool:
+        try:
+            r = await get_redis()
+            await r.set(f"nexus:engine:{side}:enabled", "1" if enabled else "0")
+            await r.set(f"nexus:engine:{side}:updated_at", datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"))
+            return True
+        except Exception as e:
+            logger.error(f"set_engine_enabled failed for {side}: {e}")
+            return False
+
+    @staticmethod
+    async def get_engine_enabled(side: str) -> Optional[bool]:
+        try:
+            r = await get_redis()
+            v = await r.get(f"nexus:engine:{side}:enabled")
+            if v is None:
+                return None
+            s = str(v).strip().lower()
+            return s in ("1", "true", "yes", "on")
+        except Exception as e:
+            logger.error(f"get_engine_enabled failed for {side}: {e}")
+            return None
+
+    @staticmethod
+    async def get_engine_updated_at(side: str) -> str:
+        try:
+            r = await get_redis()
+            v = await r.get(f"nexus:engine:{side}:updated_at")
+            return str(v or "")
+        except Exception:
+            return ""
+
+    # -----------------------------
+    # Settings versioning (real-time reload)
+    # -----------------------------
+    @staticmethod
+    async def bump_settings_version(side: str) -> int:
+        try:
+            r = await get_redis()
+            k = f"nexus:settings:version:{side}"
+            v = await r.incr(k)
+            await r.expire(k, _seconds_until_ist_eod())
+            return int(v)
+        except Exception as e:
+            logger.error(f"bump_settings_version failed for {side}: {e}")
+            return 0
+
+    @staticmethod
+    async def get_settings_version(side: str) -> int:
+        try:
+            r = await get_redis()
+            v = await r.get(f"nexus:settings:version:{side}")
+            return int(v) if v else 0
+        except Exception:
+            return 0
+
+    # -----------------------------
+    # Scanner sticky (day-wise) + rows
+    # -----------------------------
+    @staticmethod
+    async def scanner_add_sticky(side: str, symbol: str) -> bool:
+        side = str(side or "").strip().lower()
+        symbol = str(symbol or "").strip().upper()
+        if not side or not symbol:
+            return False
+        try:
+            r = await get_redis()
+            day = _ist_day_key()
+            k = f"nexus:scanner:sticky:{day}:{side}"
+            await r.sadd(k, symbol)
+            await r.expire(k, _seconds_until_ist_eod())
+            return True
+        except Exception as e:
+            logger.error(f"scanner_add_sticky failed: {e}")
+            return False
+
+    @staticmethod
+    async def scanner_get_sticky(side: str) -> List[str]:
+        side = str(side or "").strip().lower()
+        if not side:
+            return []
+        try:
+            r = await get_redis()
+            day = _ist_day_key()
+            k = f"nexus:scanner:sticky:{day}:{side}"
+            vals = await r.smembers(k)
+            return sorted([str(x).upper() for x in (vals or []) if x])
+        except Exception:
+            return []
+
+    @staticmethod
+    async def scanner_upsert_row(side: str, symbol: str, row: Dict[str, Any]) -> bool:
+        side = str(side or "").strip().lower()
+        symbol = str(symbol or "").strip().upper()
+        if not side or not symbol:
+            return False
+        try:
+            r = await get_redis()
+            day = _ist_day_key()
+            h = f"nexus:scanner:rows:{day}:{side}"
+            await r.hset(h, symbol, json.dumps(row))
+            await r.expire(h, _seconds_until_ist_eod())
+            return True
+        except Exception as e:
+            logger.error(f"scanner_upsert_row failed: {e}")
+            return False
+
+    @staticmethod
+    async def scanner_get_rows(side: str) -> Dict[str, Dict[str, Any]]:
+        side = str(side or "").strip().lower()
+        if not side:
+            return {}
+        try:
+            r = await get_redis()
+            day = _ist_day_key()
+            h = f"nexus:scanner:rows:{day}:{side}"
+            raw = await r.hgetall(h)
+            out: Dict[str, Dict[str, Any]] = {}
+            for sym, js in (raw or {}).items():
+                try:
+                    out[str(sym).upper()] = json.loads(js) if js else {}
+                except Exception:
+                    out[str(sym).upper()] = {}
+            return out
+        except Exception:
+            return {}

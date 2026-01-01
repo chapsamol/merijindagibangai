@@ -112,7 +112,9 @@
         </h2>
         <span id="scan-count" class="text-[9px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-bold">0 STOCKS</span>
       </div>
-      <p class="text-[9px] text-slate-500 font-bold uppercase tracking-tighter italic">Early Warning Signals (Pre-Trigger)</p>
+      <p class="text-[9px] text-slate-500 font-bold uppercase tracking-tighter italic">
+        Breakout Candle Filter: Turnover ≥ ₹1Cr &amp; Volume ≥ 5×SMA (Sticky All Day)
+      </p>
 
       <div class="mt-3 flex items-center justify-between">
         <span class="text-[9px] font-bold text-slate-600 uppercase tracking-widest">UI Sync</span>
@@ -163,7 +165,14 @@
           <span id="total-pnl" class="text-xl font-black text-white tabular-nums">₹ 0.00</span>
         </div>
         <div class="flex items-center gap-2">
-          <button onclick="openApiModal()" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg font-bold text-[10px] border border-slate-700 transition-all uppercase">API Gateway</button>
+          <!-- ✅ Universal Square-off -->
+          <button onclick="squareOffUniversal()" class="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-lg font-bold text-[10px] border border-rose-500/40 transition-all uppercase flex items-center gap-2">
+            <i data-lucide="octagon-x" class="w-4 h-4"></i> Squareoff ALL
+          </button>
+
+          <button onclick="openApiModal()" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg font-bold text-[10px] border border-slate-700 transition-all uppercase">
+            API Gateway
+          </button>
           <button onclick="window.location.reload()" class="bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-lg shadow-lg transition-all">
             <i data-lucide="refresh-cw" class="w-4 h-4"></i>
           </button>
@@ -291,9 +300,7 @@
     function tvLink(symbol) { return `https://www.tradingview.com/chart/?symbol=NSE:${encodeURIComponent(symbol)}`; }
     function fmt2(n) { return (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '--'; }
 
-    // -----------------------------
-    // FIX: prevent UI sync loop from fighting toggle clicks
-    // -----------------------------
+    // Prevent UI sync loop from fighting toggle clicks
     const toggleInFlight = { bull: false, mom_bull: false, bear: false, mom_bear: false };
 
     function isOnValue(v) {
@@ -343,7 +350,7 @@
               </div>
               <div class="flex items-center gap-3">
                 <span id="${eng.id}-pnl-side" class="text-xs font-black px-2 tabular-nums">0.00</span>
-                <button class="icon-btn icon-danger" title="Exit All" onclick="squareOffAll('${eng.id}')">
+                <button class="icon-btn icon-danger" title="Exit All (This Engine)" onclick="squareOffAll('${eng.id}')">
                   <i data-lucide="log-out" class="w-4 h-4" style="color:#fb7185"></i>
                 </button>
                 <label class="switch">
@@ -435,7 +442,7 @@
         updateDot('dot-brk', !!stats.data_connected?.breakout);
         updateDot('dot-mom', !!stats.data_connected?.momentum);
 
-        const connected = !!(stats.data_connected?.breakout || stats.data_connected?.momentum);
+        const connected = !!(stats.dhan_connected);
         const feed = document.getElementById('feed-status');
         feed.innerText = connected ? 'Connected' : 'Disconnected';
         feed.className = `text-[10px] font-mono font-bold uppercase ${connected ? 'text-emerald-500' : 'text-rose-400'}`;
@@ -445,7 +452,7 @@
         ou.innerText = ouOn ? 'Connected' : 'Disconnected';
         ou.className = `text-[10px] font-mono font-bold uppercase ${ouOn ? 'text-emerald-500' : 'text-rose-400'}`;
 
-        // FIX: robust parse + don't overwrite toggles while in-flight
+        // robust parse + don't overwrite toggles while in-flight
         engineMap.forEach(e => {
           const on = isOnValue(stats.engine_status?.[e.id]);
           const pnl = stats.pnl?.[e.id] || 0;
@@ -463,28 +470,40 @@
         engineMap.forEach(e => {
           const tbody = document.getElementById(`${e.id}-tbody`);
           if (!tbody) return;
-          const data = (orders[e.id] || []).filter(t => (t.status || "").toUpperCase() === "OPEN");
+
+          // ✅ show OPEN + EXIT_REQUESTED (so user sees squareoff effect)
+          const data = (orders[e.id] || []).filter(t => {
+            const st = String(t.status || '').toUpperCase();
+            return st === "OPEN" || st === "EXIT_REQUESTED" || st === "RUNNING";
+          });
+
           if (data.length > 0) {
-            tbody.innerHTML = data.map(t => `
-              <tr class="hover:bg-blue-600/5 transition-colors">
-                <td class="px-3 py-2 font-bold text-white">
-                  <a href="${tvLink(t.symbol)}" target="_blank" class="underline decoration-slate-700 hover:decoration-blue-500">${t.symbol}</a>
-                </td>
-                <td class="px-3 py-2 text-center text-blue-400 font-mono">₹${Number(t.entry_price || 0).toFixed(2)}</td>
-                <td class="px-3 py-2 text-center text-emerald-500 font-mono">₹${Number(t.target_price || 0).toFixed(2)}</td>
-                <td class="px-3 py-2 text-right font-black tabular-nums ${Number(t.pnl||0) >= 0 ? 'text-emerald-400' : 'text-rose-500'}">₹${Number(t.pnl||0).toFixed(2)}</td>
-                <td class="px-3 py-2 text-right">
-                  <button class="icon-btn icon-danger" onclick="squareOffOne('${e.id}', '${t.symbol}')">
-                    <i data-lucide="x" class="w-4 h-4" style="color:#fb7185"></i>
-                  </button>
-                </td>
-              </tr>
-            `).join('');
+            tbody.innerHTML = data.map(t => {
+              const st = String(t.status || '').toUpperCase();
+              const isExit = (st === "EXIT_REQUESTED");
+              return `
+                <tr class="hover:bg-blue-600/5 transition-colors ${isExit ? 'opacity-80' : ''}">
+                  <td class="px-3 py-2 font-bold text-white">
+                    <a href="${tvLink(t.symbol)}" target="_blank" class="underline decoration-slate-700 hover:decoration-blue-500">${t.symbol}</a>
+                    ${isExit ? `<span class="ml-2 text-[8px] font-black uppercase text-rose-400 bg-rose-400/10 px-2 py-0.5 rounded-full">EXIT REQ</span>` : ''}
+                  </td>
+                  <td class="px-3 py-2 text-center text-blue-400 font-mono">₹${Number(t.entry_price || 0).toFixed(2)}</td>
+                  <td class="px-3 py-2 text-center text-emerald-500 font-mono">₹${Number(t.target_price || 0).toFixed(2)}</td>
+                  <td class="px-3 py-2 text-right font-black tabular-nums ${Number(t.pnl||0) >= 0 ? 'text-emerald-400' : 'text-rose-500'}">₹${Number(t.pnl||0).toFixed(2)}</td>
+                  <td class="px-3 py-2 text-right">
+                    <button class="icon-btn icon-danger" onclick="squareOffOne('${e.id}', '${t.symbol}')">
+                      <i data-lucide="x" class="w-4 h-4" style="color:#fb7185"></i>
+                    </button>
+                  </td>
+                </tr>
+              `;
+            }).join('');
           } else {
             tbody.innerHTML = '<tr><td colspan="5" class="py-12 text-center text-slate-800 italic text-[10px]">No Active Position</td></tr>';
           }
         });
 
+        // ✅ Scanner: sticky breakout candle list (from backend)
         const scan = scanRes.data || {};
         const allSignals = [];
         engineMap.forEach(e => (scan[e.id] || []).forEach(s => {
@@ -495,6 +514,8 @@
         document.getElementById('unified-scanner').innerHTML = allSignals.length > 0
           ? allSignals.map(s => {
               const theme = colorTheme[s.color] || colorTheme.blue;
+              const turnover = s.turnover ? `₹${Number(s.turnover).toLocaleString()}` : '--';
+              const volx = (s.volume_mult !== undefined) ? Number(s.volume_mult).toFixed(2) : '--';
               return `
                 <div class="p-3 rounded-xl scanner-card" style="border-left-color:${theme.border}">
                   <div class="flex justify-between items-start">
@@ -504,14 +525,18 @@
                     <span class="text-[7px] font-black uppercase text-blue-400 bg-blue-400/10 px-1 rounded-sm">${String(s.sideId || '').toUpperCase()}</span>
                   </div>
                   <div class="grid grid-cols-2 gap-2 mt-2">
-                    <div class="text-[9px] text-slate-400 font-bold">Seen: <span class="text-slate-200 mono">${s.seen_time || '--'}</span></div>
-                    <div class="text-[9px] text-slate-400 font-bold text-right">Trigger: <span class="text-blue-400 mono">₹${fmt2(Number(s.trigger_px))}</span></div>
+                    <div class="text-[9px] text-slate-400 font-bold">First: <span class="text-slate-200 mono">${s.first_seen || s.seen_time || '--'}</span></div>
+                    <div class="text-[9px] text-slate-400 font-bold text-right">Close: <span class="text-blue-400 mono">₹${fmt2(Number(s.trigger_px))}</span></div>
+                  </div>
+                  <div class="grid grid-cols-2 gap-2 mt-1">
+                    <div class="text-[9px] text-slate-400 font-bold">Turnover: <span class="text-slate-200 mono">${turnover}</span></div>
+                    <div class="text-[9px] text-slate-400 font-bold text-right">Vol×SMA: <span class="text-slate-200 mono">${volx}×</span></div>
                   </div>
                   <div class="mt-2 text-[8px] text-slate-600 font-bold uppercase italic">${s.reason || 'Candidate Found'}</div>
                 </div>
               `;
             }).join('')
-          : '<div class="text-center py-20 text-slate-700 italic text-[10px]">Scanning ticks...</div>';
+          : '<div class="text-center py-20 text-slate-700 italic text-[10px]">Scanning candle closes...</div>';
 
         lucide.createIcons();
 
@@ -525,7 +550,7 @@
       }
     }
 
-    // FIX: robust toggle + no-sync-fight + revert on failure
+    // robust toggle + no-sync-fight + revert on failure
     async function handleToggle(side) {
       const toggle = document.getElementById(`toggle-${side}`);
       if (!toggle) return;
@@ -547,7 +572,6 @@
         const res = await axios.post('/api/control', payload);
         const data = res?.data || {};
 
-        // If backend returns engine_status, enforce it
         if (data.engine_status && data.engine_status[side] !== undefined) {
           toggle.checked = isOnValue(data.engine_status[side]);
         }
@@ -563,21 +587,39 @@
       }
     }
 
+    // ✅ FIXED: real squareoff behavior (manual exit request)
     async function squareOffOne(side, symbol) {
       try {
-        await axios.post('/api/control', { action: 'square_off_one', side, symbol });
-        addLog(`EXIT: ${symbol}`);
+        await axios.post('/api/control', { action: 'manual_exit_one', side, symbol });
+        addLog(`EXIT REQ: ${symbol}`);
+        runSyncParallel();
       } catch (e) {
-        addLog(`EXIT FAILED: ${symbol}`);
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`EXIT FAILED: ${symbol} | ${msg}`);
       }
     }
 
+    // ✅ FIXED: side exit all = manual exit all for that side
     async function squareOffAll(side) {
       try {
-        await axios.post('/api/control', { action: 'square_off_all', side });
-        addLog(`EXIT ALL: ${side.toUpperCase()}`);
+        await axios.post('/api/control', { action: 'manual_exit_all', side });
+        addLog(`EXIT ALL REQ: ${side.toUpperCase()}`);
+        runSyncParallel();
       } catch (e) {
-        addLog(`EXIT ALL FAILED: ${side}`);
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`EXIT ALL FAILED: ${side} | ${msg}`);
+      }
+    }
+
+    // ✅ Universal squareoff
+    async function squareOffUniversal() {
+      try {
+        await axios.post('/api/control', { action: 'square_off_universal' });
+        addLog(`UNIVERSAL EXIT REQ: ALL ENGINES`);
+        runSyncParallel();
+      } catch (e) {
+        const msg = e?.response?.data ? JSON.stringify(e.response.data) : (e?.message || String(e));
+        addLog(`UNIVERSAL EXIT FAILED | ${msg}`);
       }
     }
 
@@ -599,7 +641,6 @@
       lucide.createIcons();
     }
 
-    // FIX: correct selector + better error logging
     async function saveBrokerCreds() {
       const client_id = document.getElementById('dhan-client-id').value.trim();
       const access_token = document.getElementById('dhan-access-token').value.trim();
@@ -695,8 +736,11 @@
       }
 
       await axios.post(`/api/settings/engine/${currentEngineSide}`, payload);
-      addLog(`SAVED: ${currentEngineSide.toUpperCase()}`);
+      addLog(`SAVED: ${currentEngineSide.toUpperCase()} (REALTIME)`);
       document.getElementById('settings-modal').classList.add('hidden');
+
+      // ✅ immediately refresh UI
+      runSyncParallel();
     }
 
     function closeSettings() {

@@ -10,3 +10,4 @@ jinja2
 python-multipart
 twisted
 certifi
+orjson
